@@ -1,0 +1,59 @@
+name: Gerar instaladores
+
+# Como usar: no GitHub, aba "Actions" > "Gerar instaladores" > "Run workflow".
+# Por padrão gera só o instalador do Windows (mais rápido). Marque a caixinha para gerar também Mac e Linux.
+# Ao terminar, baixe o instalador na seção "Artifacts" da execução.
+on:
+  workflow_dispatch:
+    inputs:
+      todos:
+        description: 'Gerar também para Mac e Linux?'
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.todos && '[{"os":"windows-latest","name":"windows"},{"os":"macos-latest","name":"mac"},{"os":"ubuntu-22.04","name":"linux"}]' || '[{"os":"windows-latest","name":"windows"}]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Dependências do Linux
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm install
+
+      # Gera todos os tamanhos de ícone a partir de src-tauri/app-icon.png
+      - run: npx tauri icon src-tauri/app-icon.png
+
+      - run: npx tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resenha-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.AppImage

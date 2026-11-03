@@ -1,0 +1,25 @@
+[Unit]
+Description=Resenha - servidor de chamadas
+After=network.target
+
+[Service]
+Type=simple
+User=resenha
+Group=resenha
+WorkingDirectory=/opt/resenha
+Environment=PORT=8787
+# Só aceita conexões deste próprio computador: quem fica na frente é o Tailscale Funnel.
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/env node /opt/resenha/server/server.js
+Restart=always
+RestartSec=3
+
+# Proteções: o serviço só lê os arquivos do app e nunca passa de 150 MB de RAM.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+MemoryMax=150M
+
+[Install]
+WantedBy=multi-user.target

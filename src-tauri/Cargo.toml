@@ -1,0 +1,23 @@
+[package]
+name = "resenha"
+version = "0.1.0"
+description = "Chamadas de vídeo, voz e tela com amigos"
+edition = "2021"
+
+[lib]
+name = "resenha_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+# Instalador pequeno e leve: otimiza por tamanho e remove símbolos.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

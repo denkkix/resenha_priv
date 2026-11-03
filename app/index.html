@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resenha</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg class="sprite" width="0" height="0" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></symbol>
+  <symbol id="i-cam-off" viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/><line x1="1" y1="1" x2="23" y2="23"/></symbol>
+  <symbol id="i-screen" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+  <symbol id="i-leave" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+</svg>
+
+<!-- Entrada -->
+<main id="lobby" class="lobby">
+  <section class="lobby-card">
+    <h1 class="wordmark">resenha</h1>
+    <p class="tagline">Vídeo, voz e tela com seus amigos, num app leve.</p>
+
+    <form id="joinForm" autocomplete="off">
+      <label for="name">Seu nome</label>
+      <input id="name" maxlength="24" placeholder="Como os amigos vão te ver" required>
+
+      <label for="code">Código da sala</label>
+      <input id="code" maxlength="40" placeholder="ex.: lua-vento-4821" spellcheck="false" autocapitalize="off">
+      <p class="hint">Quem tiver o código entra na sala.</p>
+
+      <details id="adv" class="adv">
+        <summary>Servidor</summary>
+        <input id="server" placeholder="meu-servidor.exemplo.com" spellcheck="false" autocapitalize="off" aria-label="Endereço do servidor">
+        <p class="hint">Só precisa mudar se alguém hospedou um servidor para vocês. Deixe vazio para usar o endereço desta página.</p>
+      </details>
+
+      <p id="lobbyErr" class="err" role="alert"></p>
+
+      <div class="row">
+        <button id="joinBtn" class="btn primary" type="submit">Entrar na sala</button>
+        <button id="createBtn" class="btn" type="button">Criar sala nova</button>
+      </div>
+    </form>
+  </section>
+
+  <svg class="ring" viewBox="0 0 200 200" aria-hidden="true">
+    <circle cx="100" cy="100" r="64" fill="none" stroke="#3a3553" stroke-width="2"/>
+    <circle cx="100" cy="36" r="17" fill="#ffb84d"/>
+    <circle cx="160.9" cy="80.2" r="17" fill="#34d1b0"/>
+    <circle cx="137.6" cy="151.8" r="17" fill="#ff7aa8"/>
+    <circle cx="62.4" cy="151.8" r="17" fill="#9b8cff"/>
+    <circle cx="39.1" cy="80.2" r="17" fill="#5cc8ff"/>
+  </svg>
+</main>
+
+<!-- Sala -->
+<main id="room" class="room" hidden>
+  <header class="topbar">
+    <div class="code-chip">
+      <span id="roomCode"></span>
+      <button id="copyInvite" class="mini" title="Copiar convite" aria-label="Copiar convite"><svg class="ic"><use href="#i-copy"/></svg><span>Copiar convite</span></button>
+    </div>
+    <span id="count" class="muted"></span>
+    <span id="live" class="live" hidden>Você está transmitindo a tela</span>
+    <span id="net" class="net" data-state="ok">Conectado</span>
+  </header>
+
+  <section id="stage" class="stage" aria-label="Pessoas na sala">
+    <p id="empty" class="empty">Só você por aqui. Toque em “Copiar convite” e mande para seus amigos.</p>
+  </section>
+
+  <aside id="chat" class="chat" hidden aria-label="Chat da sala">
+    <ol id="msgs" class="msgs"></ol>
+    <form id="chatForm" class="chat-form" autocomplete="off">
+      <input id="chatInput" maxlength="500" placeholder="Escreva uma mensagem" aria-label="Mensagem">
+      <button class="btn primary" type="submit">Enviar</button>
+    </form>
+  </aside>
+
+  <nav class="controls" aria-label="Controles da chamada">
+    <button id="bMic" class="ctl" aria-pressed="true" title="Silenciar microfone" aria-label="Microfone"><svg class="ic"><use href="#i-mic"/></svg></button>
+    <button id="bCam" class="ctl" aria-pressed="false" title="Ligar câmera" aria-label="Câmera"><svg class="ic"><use href="#i-cam-off"/></svg></button>
+    <button id="bScr" class="ctl" aria-pressed="false" title="Compartilhar tela" aria-label="Compartilhar tela"><svg class="ic"><use href="#i-screen"/></svg></button>
+    <button id="bChat" class="ctl" aria-pressed="false" title="Abrir chat" aria-label="Chat"><svg class="ic"><use href="#i-chat"/></svg></button>
+    <button id="bSet" class="ctl" title="Ajustes" aria-label="Ajustes"><svg class="ic"><use href="#i-sliders"/></svg></button>
+    <button id="bLeave" class="ctl leave" title="Sair da sala" aria-label="Sair da sala"><svg class="ic"><use href="#i-leave"/></svg></button>
+  </nav>
+</main>
+
+<!-- Ajustes -->
+<dialog id="settings">
+  <form method="dialog" class="settings">
+    <h2>Ajustes</h2>
+
+    <label for="selMic">Microfone</label>
+    <select id="selMic"></select>
+
+    <label for="selCam">Câmera</label>
+    <select id="selCam"></select>
+
+    <div id="spkRow">
+      <label for="selSpk">Saída de áudio</label>
+      <select id="selSpk"></select>
+    </div>
+
+    <label for="selCamQ">Qualidade da câmera</label>
+    <select id="selCamQ">
+      <option value="leve">Leve (360p, gasta menos)</option>
+      <option value="normal">Normal (720p)</option>
+    </select>
+
+    <label for="selScrQ">Qualidade da tela</label>
+    <select id="selScrQ">
+      <option value="leve">Leve (720p, 15 quadros: bom para texto)</option>
+      <option value="equilibrado">Equilibrada (720p, 30 quadros)</option>
+      <option value="alta">Alta (1080p, 30 quadros)</option>
+    </select>
+
+    <label class="check"><input type="checkbox" id="chkEco"> Economizar quando a janela estiver minimizada <small>Pede aos amigos para pararem de mandar vídeo enquanto você não está olhando.</small></label>
+    <label class="check"><input type="checkbox" id="chkPreview"> Mostrar prévia da minha tela <small>Usa mais memória. Desligado por padrão.</small></label>
+
+    <p class="hint">Dica: ao compartilhar a tela com o som do computador, use fones para ninguém ouvir eco.</p>
+
+    <div class="row end"><button class="btn primary" value="close">Pronto</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
