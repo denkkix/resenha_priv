@@ -17,17 +17,31 @@
     set(k, v) { try { localStorage.setItem('resenha.' + k, JSON.stringify(v)); } catch { /* sem armazenamento */ } },
   };
   const prefs = Object.assign(
-    { name: '', server: '', mic: '', cam: '', spk: '', camQ: 'leve', scrQ: 'equilibrado', eco: true, preview: false },
+    { name: '', server: '', mic: '', cam: '', spk: '', camQ: 'leve', scrQ: 'equilibrado', eco: true, preview: false, stats: false },
     store.get('prefs', {})
   );
   const savePrefs = () => store.set('prefs', prefs);
+  // Vindo do app instalado (boot.js): traz nome e qualidade na primeira vez e limpa o endereço.
+  try {
+    const q = new URLSearchParams(location.search).get('p');
+    if (q) {
+      const carry = JSON.parse(decodeURIComponent(escape(atob(q))));
+      if (!store.get('prefs', null)) for (const k of ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats']) if (carry[k] !== undefined && typeof carry[k] === typeof prefs[k]) prefs[k] = carry[k];
+      savePrefs();
+      history.replaceState(null, '', location.pathname + location.hash);
+    }
+  } catch { /* ignora */ }
 
-  const CAM_Q = { leve: { w: 640, h: 360, fps: 24, kbps: 450 }, normal: { w: 1280, h: 720, fps: 30, kbps: 1300 } };
+  // kbps é só o teto: o WebRTC mede a internet e desce sozinho se não der.
+  const CAM_Q = { leve: { w: 640, h: 360, fps: 30, kbps: 800 }, normal: { w: 1280, h: 720, fps: 30, kbps: 1800 } };
+  // A tela sai sempre a 60 quadros por segundo (fixo). A qualidade muda só a resolução e o teto de banda.
+  const SCR_FPS = 60;
   const SCR_Q = {
-    leve: { w: 1280, h: 720, fps: 15, kbps: 900, hint: 'detail' },
-    equilibrado: { w: 1280, h: 720, fps: 30, kbps: 1800, hint: 'motion' },
-    alta: { w: 1920, h: 1080, fps: 30, kbps: 3500, hint: 'motion' },
+    leve: { w: 1280, h: 720, fps: SCR_FPS, kbps: 1500, hint: 'motion' },
+    equilibrado: { w: 1280, h: 720, fps: SCR_FPS, kbps: 2500, hint: 'motion' },
+    alta: { w: 1920, h: 1080, fps: SCR_FPS, kbps: 4500, hint: 'motion' },
   };
+  const scrSpec = () => ({ ...(SCR_Q[prefs.scrQ] || SCR_Q.equilibrado), pool: 8000 }); // pool: teto total de envio da tela, dividido entre os amigos
   const ROLE_MIC = 0, ROLE_CAM = 1, ROLE_SCR = 2, ROLE_SCRA = 3;
 
   /* ------------------------------------------------------------------ estado */
@@ -35,7 +49,7 @@
     ws: null, id: null, name: '', room: '', max: 8,
     ice: [{ urls: ['stun:stun.l.google.com:19302'] }],
     peers: new Map(), leaving: false, welcomed: false, retry: 0, retryTimer: 0,
-    focus: null, unread: 0, chatOpen: false,
+    focus: null, unread: 0, chatOpen: false, maxScreens: 0, build: '', staleWarned: false,
   };
   const L = { mic: null, cam: null, scrV: null, scrA: null, micOn: true }; // mídia local
 
@@ -43,7 +57,7 @@
   for (const id of ['lobby', 'room', 'joinForm', 'name', 'code', 'server', 'adv', 'lobbyErr', 'joinBtn', 'createBtn',
     'stage', 'empty', 'roomCode', 'count', 'net', 'live', 'copyInvite', 'chat', 'msgs', 'chatForm', 'chatInput',
     'bMic', 'bCam', 'bScr', 'bChat', 'bSet', 'bLeave', 'settings', 'selMic', 'selCam', 'selSpk', 'spkRow',
-    'selCamQ', 'selScrQ', 'chkEco', 'chkPreview', 'toast']) el[id] = document.getElementById(id);
+    'selCamQ', 'selScrQ', 'verInfo', 'chkEco', 'chkPreview', 'chkStats', 'btnDiag', 'toast']) el[id] = document.getElementById(id);
 
   /* ------------------------------------------------------------------- utils */
   let toastTimer = 0;
@@ -119,6 +133,13 @@
       case 'welcome': {
         if (S.id && m.id !== S.id) { for (const id of [...S.peers.keys()]) removePeer(id); } // perdemos o lugar: recomeça
         S.id = m.id; S.ice = m.ice && m.ice.length ? m.ice : S.ice; S.max = m.max || S.max;
+        S.maxScreens = (m.limits && Number(m.limits.screens)) || 0;
+        // O servidor foi atualizado enquanto esta janela estava aberta: avisa sem derrubar a chamada.
+        if (S.build && m.build && m.build !== S.build && !S.staleWarned) {
+          S.staleWarned = true;
+          toast('Saiu uma versão nova da Resenha. Quando terminar a chamada, feche e abra o app (ou aperte F5 no navegador) para atualizar.', 12000);
+        }
+        S.hasTurn = S.ice.some((s) => [].concat(s.urls || []).some((u) => /^turns?:/i.test(u)));
         S.welcomed = true; S.retry = 0; setNet('ok');
         const present = new Set(m.peers.map((p) => p.id));
         for (const id of [...S.peers.keys()]) if (!present.has(id)) removePeer(id);
@@ -135,6 +156,11 @@
       case 'signal': {
         const peer = S.peers.get(m.from) || addPeer({ id: m.from, name: 'Amigo' });
         peer.q = peer.q.then(() => handleSignal(peer, m.data)).catch(warn);
+        break;
+      }
+      case 'limit': {
+        // O servidor recusou a transmissão: já há gente demais com a tela no ar.
+        if (m.what === 'screen') { stopShare(); toast(limitMsg(m.max)); }
         break;
       }
       case 'state': {
@@ -164,7 +190,7 @@
     peer = {
       id: p.id, name: p.name || 'Amigo', state: Object.assign({ mic: true, cam: false, screen: false }, p.state),
       pc: null, camStream: new MediaStream(), scrStream: new MediaStream(),
-      offerer: false, q: Promise.resolve(), pending: [], rxVideo: true, tries: 0, rt: 0, screenSince: 0,
+      offerer: false, q: Promise.resolve(), pending: [], rxVideo: true, tries: 0, rt: 0, screenSince: 0, watch: 0, stuck: false,
     };
     if (peer.state.screen) peer.screenSince = Date.now();
     S.peers.set(p.id, peer);
@@ -174,7 +200,7 @@
   function removePeer(id) {
     const p = S.peers.get(id); if (!p) return;
     S.peers.delete(id);
-    clearTimeout(p.rt);
+    clearTimeout(p.rt); clearTimeout(p.watch);
     if (p.pc) { p.pc.onicecandidate = p.pc.ontrack = p.pc.onconnectionstatechange = null; try { p.pc.close(); } catch { /* já fechada */ } }
     for (const s of [p.camStream, p.scrStream]) s.getTracks().forEach((t) => s.removeTrack(t));
     if (S.focus && S.focus.startsWith(id)) S.focus = null;
@@ -184,6 +210,15 @@
   function makePC(peer) {
     const pc = new RTCPeerConnection({ iceServers: S.ice, bundlePolicy: 'max-bundle' });
     peer.pc = pc;
+    // Se em 15 s a ligação com este amigo não fechou, avisa em vez de ficar "conectando…" para sempre.
+    clearTimeout(peer.watch); peer.stuck = false;
+    peer.watch = setTimeout(() => {
+      if (peer.pc !== pc || pc.connectionState === 'connected') return;
+      peer.stuck = true; syncTiles();
+      toast(S.hasTurn
+        ? `Ainda não consegui ligar com ${peer.name}. A internet de vocês está bem fechada; vou continuar tentando.`
+        : `Não consegui ligar com ${peer.name}: a internet de um de vocês bloqueia a ligação direta. Falta ligar o servidor TURN (veja o guia).`, 10000);
+    }, 15000);
     pc.onicecandidate = (e) => { if (e.candidate) sig(peer.id, { candidate: e.candidate.toJSON() }); };
     pc.ontrack = (e) => onTrack(peer, e);
     pc.onconnectionstatechange = () => onConn(peer);
@@ -247,7 +282,7 @@
   function onConn(peer) {
     const st = peer.pc && peer.pc.connectionState;
     if (st === 'connected') {
-      clearTimeout(peer.rt); peer.tries = 0;
+      clearTimeout(peer.rt); clearTimeout(peer.watch); peer.tries = 0; peer.stuck = false;
       tune(peer);
       if (document.hidden && prefs.eco) sig(peer.id, { ctl: 'rx', on: false });
     } else if ((st === 'disconnected' || st === 'failed') && peer.offerer) {
@@ -272,9 +307,9 @@
     const pc = peer.pc; if (!pc) return;
     const ts = pc.getTransceivers();
     const n = Math.max(1, S.peers.size);
-    const camQ = CAM_Q[prefs.camQ] || CAM_Q.leve, scrQ = SCR_Q[prefs.scrQ] || SCR_Q.equilibrado;
-    const camMax = Math.max(120, Math.min(camQ.kbps, Math.floor(2400 / n))) * 1000;
-    const scrMax = Math.max(400, Math.min(scrQ.kbps, Math.floor(6000 / n))) * 1000;
+    const camQ = CAM_Q[prefs.camQ] || CAM_Q.leve, scrQ = scrSpec();
+    const camMax = Math.max(250, Math.min(camQ.kbps, Math.floor(5000 / n))) * 1000;
+    const scrMax = Math.max(400, Math.min(scrQ.kbps, Math.floor(scrQ.pool / n))) * 1000;
     const set = (i, fn) => {
       const s = ts[i] && ts[i].sender; if (!s) return;
       try {
@@ -322,7 +357,10 @@
       const q = CAM_Q[prefs.camQ] || CAM_Q.leve;
       const video = { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps } };
       if (prefs.cam) video.deviceId = { exact: prefs.cam };
-      try { L.cam = (await navigator.mediaDevices.getUserMedia({ video })).getVideoTracks()[0]; }
+      try {
+        L.cam = (await navigator.mediaDevices.getUserMedia({ video })).getVideoTracks()[0];
+        if ('contentHint' in L.cam) L.cam.contentHint = 'motion'; // prefere manter os quadros por segundo a nitidez
+      }
       catch (e) {
         if (e && e.name === 'OverconstrainedError' && prefs.cam) { prefs.cam = ''; savePrefs(); return setCam(true); }
         toast(mediaMsg(e, 'a câmera')); return;
@@ -332,9 +370,13 @@
     tuneAll(); sendState(); syncTiles(); renderControls();
   }
 
+  const limitMsg = (n) => `Já há ${n} ${n === 1 ? 'pessoa transmitindo' : 'pessoas transmitindo'} a tela. Quando uma parar, você pode transmitir.`;
+  const sharingNow = () => [...S.peers.values()].filter((p) => p.state.screen).length;
+
   async function startShare() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return toast('Este sistema não deixa compartilhar a tela.');
-    const q = SCR_Q[prefs.scrQ] || SCR_Q.equilibrado;
+    if (S.maxScreens && sharingNow() >= S.maxScreens) return toast(limitMsg(S.maxScreens)); // o servidor também confere
+    const q = scrSpec();
     let s;
     try {
       s = await navigator.mediaDevices.getDisplayMedia({
@@ -407,11 +449,12 @@
     mic.appendChild(use);
     const label = document.createElement('span');
     tag.append(mic, label);
-    root.append(video, avatar, tag);
+    const stats = document.createElement('div'); stats.className = 'stats'; stats.hidden = !prefs.stats;
+    root.append(video, avatar, tag, stats);
     root.addEventListener('click', () => { S.focus = (focusKey() === key) ? '-' : key; layout(); });
     root.addEventListener('dblclick', () => { if (document.fullscreenElement) document.exitFullscreen(); else root.requestFullscreen && root.requestFullscreen().catch(() => {}); });
     el.stage.appendChild(root);
-    const t = { key, kind, el: root, video, avatar, label, mic, src: null };
+    const t = { key, kind, el: root, video, avatar, label, mic, stats, src: null };
     tiles.set(key, t);
     if (prefs.spk && video.setSinkId) video.setSinkId(prefs.spk).catch(() => {});
     return t;
@@ -421,6 +464,7 @@
     const t = tiles.get(key); if (!t) return;
     t.video.srcObject = null; t.el.remove(); tiles.delete(key);
     const m = meters.get(key); if (m) { try { m.src.disconnect(); } catch { /* ok */ } meters.delete(key); }
+    statText.delete(key); last.delete(key);
   }
 
   function setSrc(t, stream, sig) {
@@ -457,7 +501,7 @@
         t.el.classList.remove('novideo'); t.mic.style.display = 'none';
       } else if (w.kind === 'cam') {
         const connecting = !p.pc || p.pc.connectionState !== 'connected';
-        t.label.textContent = connecting ? `${p.name} · conectando…` : p.name;
+        t.label.textContent = !connecting ? p.name : `${p.name} · ${p.stuck ? 'sem conexão' : 'conectando…'}`;
         t.avatar.textContent = initial(p.name); t.avatar.style.background = colorFor(p.name);
         t.video.muted = false;
         setSrc(t, p.camStream, p.id);
@@ -541,6 +585,131 @@
   }
   new ResizeObserver(layout).observe(el.stage);
 
+  /* ------------------------------------------------- diagnóstico da conexão */
+  const last = new Map();      // amostra anterior de cada vídeo, para calcular taxas por segundo
+  const statText = new Map();  // chave do tile -> texto mostrado
+  let statsTimer = 0;
+  const LIMITS = { none: 'nenhum', cpu: 'processador', bandwidth: 'internet', other: 'outro' };
+
+  // Como a ligação com um amigo está de fato chegando: direta ou passando por um servidor relay (TURN).
+  async function connType(pc) {
+    try {
+      const rep = await pc.getStats();
+      const byId = new Map();
+      rep.forEach((s) => byId.set(s.id, s));
+      let pair = null;
+      rep.forEach((s) => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = byId.get(s.selectedCandidatePairId); });
+      if (!pair) rep.forEach((s) => { if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s; });
+      if (!pair) return null;
+      const lt = (byId.get(pair.localCandidateId) || {}).candidateType;
+      const rt = (byId.get(pair.remoteCandidateId) || {}).candidateType;
+      return {
+        via: lt === 'relay' || rt === 'relay' ? 'por relay (TURN)' : 'direta',
+        rtt: typeof pair.currentRoundTripTime === 'number' ? Math.round(pair.currentRoundTripTime * 1000) : null,
+      };
+    } catch { return null; }
+  }
+
+  async function readVideo(pc, role, dir, key, now) {
+    const t = pc.getTransceivers()[role];
+    const track = t && (dir === 'rx' ? t.receiver.track : t.sender.track);
+    if (!track) return null;
+    let r = null, src = null;
+    (await pc.getStats(track)).forEach((s) => {
+      if (s.kind === 'video' && s.type === (dir === 'rx' ? 'inbound-rtp' : 'outbound-rtp')) r = s;
+      if (s.type === 'media-source' && s.kind === 'video') src = s;
+    });
+    if (!r) return null;
+    const prev = last.get(key);
+    last.set(key, { t: now, r });
+    const o = { w: r.frameWidth || 0, h: r.frameHeight || 0, fps: Math.round(r.framesPerSecond || 0) };
+    if (src && src.framesPerSecond) o.cap = Math.round(src.framesPerSecond);
+    if (dir === 'tx') o.limit = r.qualityLimitationReason || 'none';
+    if (prev) {
+      const dt = (now - prev.t) / 1000 || 1;
+      const b = dir === 'rx' ? 'bytesReceived' : 'bytesSent';
+      o.kbps = Math.max(0, Math.round(((r[b] - prev.r[b]) * 8) / 1000 / dt));
+      if (dir === 'rx') {
+        const lost = Math.max(0, r.packetsLost - prev.r.packetsLost), got = r.packetsReceived - prev.r.packetsReceived;
+        o.loss = lost + got > 0 ? Math.round((100 * lost) / (lost + got)) : 0;
+        const n = r.jitterBufferEmittedCount - prev.r.jitterBufferEmittedCount;
+        if (n > 0) o.delay = Math.round((1000 * (r.jitterBufferDelay - prev.r.jitterBufferDelay)) / n);
+      }
+    }
+    return o;
+  }
+
+  function fmt(o, dir, role) {
+    const parts = [`${o.w}×${o.h}`, `${o.fps} fps`];
+    if (o.kbps !== undefined) parts.push(`${o.kbps} kbps`);
+    if (dir === 'rx') {
+      if (o.loss !== undefined) parts.push(`perda ${o.loss}%`);
+      if (o.delay !== undefined) parts.push(`atraso ${o.delay} ms`);
+    } else {
+      if (o.cap) parts.push(`${role === ROLE_SCR ? 'captura' : 'webcam'} entrega ${o.cap} fps`);
+      parts.push(`limite: ${LIMITS[o.limit] || o.limit}`);
+    }
+    return `${dir === 'rx' ? 'recebendo' : 'enviando'} ${parts.join(' · ')}`;
+  }
+
+  async function pollStats() {
+    if (document.hidden || el.room.hidden) return;
+    const now = performance.now();
+    const live = [];
+    for (const p of S.peers.values()) {
+      if (p.pc && p.pc.connectionState === 'connected') live.push(p);
+      else statText.set(p.id, p.stuck ? 'sem conexão direta' : 'conectando…');
+    }
+    await Promise.all(live.map(async (p) => {
+      try {
+        const c = await connType(p.pc);
+        const via = c ? `ligação ${c.via}${c.rtt !== null ? ` · ping ${c.rtt} ms` : ''}` : '';
+        const join = (a) => [a, via].filter(Boolean).join(' · ');
+        const cam = p.state.cam ? await readVideo(p.pc, ROLE_CAM, 'rx', p.id, now) : null;
+        statText.set(p.id, join(p.state.cam ? (cam ? fmt(cam, 'rx', ROLE_CAM) : 'sem imagem') : 'câmera desligada'));
+        if (p.state.screen) {
+          const scr = await readVideo(p.pc, ROLE_SCR, 'rx', `${p.id}:s`, now);
+          statText.set(`${p.id}:s`, join(scr ? fmt(scr, 'rx', ROLE_SCR) : 'sem imagem'));
+        }
+      } catch { /* a ligação estava mudando */ }
+    }));
+    if (L.cam && live[0]) {
+      try { const tx = await readVideo(live[0].pc, ROLE_CAM, 'tx', 'me', now); statText.set('me', tx ? fmt(tx, 'tx', ROLE_CAM) : ''); } catch { /* ok */ }
+    } else statText.set('me', L.cam ? 'sem ninguém para receber' : '');
+    if (L.scrV && live[0]) {
+      try { const tx = await readVideo(live[0].pc, ROLE_SCR, 'tx', 'me:s', now); statText.set('me:s', tx ? fmt(tx, 'tx', ROLE_SCR) : ''); } catch { /* ok */ }
+    } else statText.delete('me:s');
+    if (prefs.stats) tiles.forEach((t) => { t.stats.textContent = statText.get(t.key) || ''; });
+  }
+
+  function setStatsOn(on) {
+    prefs.stats = on; savePrefs();
+    clearInterval(statsTimer); statsTimer = 0;
+    if (on) { statsTimer = setInterval(pollStats, 1000); pollStats(); }
+    else { last.clear(); statText.clear(); }
+    tiles.forEach((t) => { t.stats.hidden = !on; if (!on) t.stats.textContent = ''; });
+  }
+
+  // Texto para colar na conversa quando algo está ruim: mostra de onde vem o problema.
+  async function buildDiag() {
+    const wasOn = !!statsTimer;
+    await pollStats(); await new Promise((r) => setTimeout(r, 1200)); await pollStats();
+    const names = new Map([['me', `${S.name} (você)`], ['me:s', 'sua tela (enviando)']]);
+    S.peers.forEach((p) => { names.set(p.id, p.name); names.set(`${p.id}:s`, `tela de ${p.name}`); });
+    const cs = L.cam ? L.cam.getSettings() : null;
+    const lines = [
+      'Resenha · diagnóstico',
+      verText(),
+      `sistema: ${navigator.userAgent}`,
+      `pessoas na sala: ${S.peers.size + 1} · servidor TURN: ${S.hasTurn ? 'sim' : 'NÃO'}`,
+      `câmera: ${cs ? `${cs.width}×${cs.height}, pedido ${cs.frameRate || '?'} fps, qualidade ${prefs.camQ}` : 'desligada'} · tela: ${prefs.scrQ}, ${scrSpec().fps} fps pedidos${L.scrV ? `, captura ${Math.round((L.scrV.getSettings().frameRate || 0))} fps` : ''} · economia: ${prefs.eco ? 'sim' : 'não'}`,
+      ...[...S.peers.values()].map((p) => `ligação com ${p.name}: ${p.pc ? `${p.pc.connectionState} (ICE ${p.pc.iceConnectionState})` : 'sem ligação'}`),
+      ...[...statText].map(([k, v]) => `${names.get(k) || k}: ${v}`),
+    ];
+    if (!wasOn) { last.clear(); statText.clear(); }
+    return lines.join('\n');
+  }
+
   /* ------------------------------------------------------------------------ chat */
   function onChat(m) {
     const li = document.createElement('li');
@@ -598,7 +767,7 @@
     fill(el.selSpk, 'audiooutput', prefs.spk, 'Padrão do sistema', 'Saída');
     el.spkRow.hidden = !(HTMLMediaElement.prototype.setSinkId);
     el.selCamQ.value = prefs.camQ; el.selScrQ.value = prefs.scrQ;
-    el.chkEco.checked = !!prefs.eco; el.chkPreview.checked = !!prefs.preview;
+    el.chkEco.checked = !!prefs.eco; el.chkPreview.checked = !!prefs.preview; el.chkStats.checked = !!prefs.stats;
   }
 
   /* ---------------------------------------------------------------- entrar / sair */
@@ -631,7 +800,7 @@
     for (const t of [L.mic, L.cam, L.scrV, L.scrA]) if (t) t.stop();
     L.mic = L.cam = L.scrV = L.scrA = null;
     for (const k of [...tiles.keys()]) dropTile(k);
-    meters.clear();
+    meters.clear(); last.clear(); statText.clear();
     if (actx) { actx.close().catch(() => {}); actx = null; }
     S.id = null; S.welcomed = false; S.focus = null; S.unread = 0; S.chatOpen = false;
     el.chat.hidden = true; el.msgs.textContent = '';
@@ -688,13 +857,29 @@
   el.selScrQ.addEventListener('change', () => { prefs.scrQ = el.selScrQ.value; savePrefs(); tuneAll(); });
   el.chkEco.addEventListener('change', () => { prefs.eco = el.chkEco.checked; savePrefs(); if (!prefs.eco) S.peers.forEach((p) => sig(p.id, { ctl: 'rx', on: true })); });
   el.chkPreview.addEventListener('change', () => { prefs.preview = el.chkPreview.checked; savePrefs(); syncTiles(); });
+  el.chkStats.addEventListener('change', () => setStatsOn(el.chkStats.checked));
+  el.btnDiag.addEventListener('click', async () => {
+    el.btnDiag.disabled = true; toast('Coletando dados… (2 segundos)', 3000);
+    try {
+      const text = await buildDiag();
+      try { await navigator.clipboard.writeText(text); toast('Diagnóstico copiado. É só colar na conversa.'); }
+      catch { toast('Não consegui copiar. Ligue “Mostrar estatísticas” e tire uma foto da tela.', 8000); }
+    } finally { el.btnDiag.disabled = false; }
+  });
 
   // Economia: janela minimizada/escondida => os amigos param de mandar vídeo para mim.
+  // Espera 6 s antes de pedir isso: um alt-tab rápido, ou outra janela passando por cima, não deve cortar o vídeo.
+  const HIDE_DELAY_MS = 6000;
+  let hideTimer = 0;
   document.addEventListener('visibilitychange', () => {
     if (!prefs.eco || el.room.hidden) return;
-    const on = !document.hidden;
-    S.peers.forEach((p) => sig(p.id, { ctl: 'rx', on }));
-    if (on) layout();
+    clearTimeout(hideTimer);
+    if (document.hidden) {
+      hideTimer = setTimeout(() => { if (document.hidden) S.peers.forEach((p) => sig(p.id, { ctl: 'rx', on: false })); }, HIDE_DELAY_MS);
+    } else {
+      S.peers.forEach((p) => sig(p.id, { ctl: 'rx', on: true }));
+      layout();
+    }
   });
   window.addEventListener('pagehide', () => { if (!S.leaving) wsSend({ t: 'leave' }); });
 
@@ -707,5 +892,11 @@
   renderControls();
 
   // gancho para testes automatizados
-  window.__resenha = { S, L, tiles, prefs };
+  setStatsOn(!!prefs.stats);
+  const verText = () => (isApp ? 'Versão: interface local do app (sem atualização automática: o servidor não respondeu ou ainda não foi configurado)' : `Versão da interface: ${S.build || 'desconhecida'}`);
+  if (!isApp) {
+    fetch(`/version.json?t=${Date.now()}`).then((r) => r.json()).then((j) => { if (j && j.build) S.build = j.build; el.verInfo.textContent = verText(); }).catch(() => {});
+  }
+  el.verInfo.textContent = verText();
+  window.__resenha = { S, L, tiles, prefs, buildDiag };
 })();

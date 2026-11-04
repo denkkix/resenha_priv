@@ -21,7 +21,7 @@ const MAX_ROOMS = Number(process.env.MAX_ROOMS) || 500;
 const MAX_CONNS = Number(process.env.MAX_CONNS) || 2000;
 const GRACE_MS = Number(process.env.GRACE_MS) || 6000; // tempo para reconectar sem derrubar a chamada
 const MAX_MSG = 64 * 1024;
-const APP_DIR = path.join(__dirname, '..', 'app');
+const APP_DIR = path.resolve(process.env.APP_DIR || path.join(__dirname, '..', 'app'));
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 function iceServers() {
@@ -31,7 +31,7 @@ function iceServers() {
   }
   const list = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
   // Opcional: um servidor TURN ajuda quando a internet de alguém bloqueia conexão direta.
-  if (process.env.TURN_URL) {
+  if (process.env.TURN_URL && !process.env.TURN_SECRET) {
     list.push({
       urls: process.env.TURN_URL.split(',').map((s) => s.trim()),
       username: process.env.TURN_USER || '',
@@ -42,7 +42,130 @@ function iceServers() {
 }
 const ICE = iceServers();
 
+/*
+ * TURN dinâmico. Sem um servidor TURN, quem está atrás de CGNAT ou de um roteador fechado não consegue
+ * ligar direto com os amigos (ficam sem se ver nem se ouvir). Duas formas de ligar:
+ *   - Cloudflare Realtime TURN:  CF_TURN_KEY_ID + CF_TURN_API_TOKEN   (credenciais temporárias, chave só aqui)
+ *   - Qualquer serviço que devolva uma lista iceServers por GET (ex.: Metered):  ICE_URL=https://...
+ * As credenciais são buscadas na partida e renovadas sozinhas; o token nunca vai para os clientes.
+ */
+const ICE_TTL_S = Number(process.env.ICE_TTL_S) || 12 * 3600;
+const ICE_REFRESH_MS = Number(process.env.ICE_REFRESH_MS) || 3 * 3600 * 1000;
+const ICE_RETRY_MS = Number(process.env.ICE_RETRY_MS) || 60 * 1000;
+const CF_BASE = (process.env.CF_API_BASE || 'https://rtc.live.cloudflare.com').replace(/\/+$/, '');
+let dynamicIce = [];
+
+function normalizeIce(raw) {
+  const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
+  const out = [];
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue;
+    // porta 53 é bloqueada pelos navegadores e só atrasa a conexão
+    const urls = [].concat(s.urls || s.url || []).filter((u) => typeof u === 'string' && !/:53(\?|$)/.test(u));
+    if (urls.length) out.push({ urls, username: s.username, credential: s.credential });
+  }
+  return out;
+}
+
+async function fetchIce() {
+  const { CF_TURN_KEY_ID: keyId, CF_TURN_API_TOKEN: token, ICE_URL: iceUrl } = process.env;
+  if (keyId && token) {
+    const r = await fetch(`${CF_BASE}/v1/turn/keys/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ttl: ICE_TTL_S }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw new Error(`a Cloudflare respondeu ${r.status}`);
+    const j = await r.json();
+    return normalizeIce(j.iceServers);
+  }
+  if (iceUrl) {
+    const r = await fetch(iceUrl, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error(`o serviço de TURN respondeu ${r.status}`);
+    const j = await r.json();
+    return normalizeIce(Array.isArray(j) ? j : j.iceServers);
+  }
+  return null;
+}
+
+async function refreshIce() {
+  let wait = ICE_REFRESH_MS;
+  try {
+    const list = await fetchIce();
+    if (list && list.length) {
+      dynamicIce = list;
+      console.log(`TURN: ${list.length} servidor(es) carregado(s); renovação automática a cada ${Math.round(ICE_REFRESH_MS / 3600000 * 10) / 10} h`);
+    } else {
+      console.error('TURN: o serviço respondeu sem nenhum servidor utilizável.');
+      wait = ICE_RETRY_MS;
+    }
+  } catch (e) {
+    console.error(`TURN: não consegui buscar as credenciais (${e.message}). Tentando de novo em breve.`);
+    wait = ICE_RETRY_MS; // enquanto isso segue com as credenciais anteriores (se houver)
+  }
+  setTimeout(refreshIce, wait).unref();
+}
+
+/*
+ * TURN próprio (coturn) com segredo compartilhado, o jeito padrão "TURN REST API": o usuário é "<validade>:resenha" e a
+ * senha é base64(HMAC-SHA1(segredo, usuário)). Calculado aqui na hora, sem rede e sem serviço externo.
+ * O segredo fica só no servidor (e no coturn); os clientes recebem apenas o par temporário.
+ */
+function secretIce() {
+  const { TURN_URL: url, TURN_SECRET: secret } = process.env;
+  if (!url || !secret) return [];
+  const username = `${Math.floor(Date.now() / 1000) + ICE_TTL_S}:resenha`;
+  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+  return [{ urls: url.split(',').map((x) => x.trim()).filter(Boolean), username, credential }];
+}
+
+/*
+ * Limite de gastos: quando o relay é de um serviço com cota/cobrança (Cloudflare ou ICE_URL), só 2 pessoas podem
+ * transmitir a tela ao mesmo tempo. Com um coturn próprio (sem cota) o limite não existe.
+ *   - automático: CF_TURN_* ou ICE_URL configurados => 2;  caso contrário => sem limite
+ *   - manual: MAX_SCREENS=N  (0 = sem limite)
+ */
+const BILLED_RELAY = !!((process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN) || process.env.ICE_URL);
+const SCREENS_WHEN_BILLED = 2;
+let MAX_SCREENS = BILLED_RELAY ? SCREENS_WHEN_BILLED : 0;
+if (process.env.MAX_SCREENS !== undefined && process.env.MAX_SCREENS !== '') {
+  const n = Number(process.env.MAX_SCREENS);
+  if (Number.isInteger(n) && n >= 0) MAX_SCREENS = n;
+  else console.error(`MAX_SCREENS="${process.env.MAX_SCREENS}" não é um número inteiro (0 = sem limite). Usando ${MAX_SCREENS}.`);
+}
+console.log(MAX_SCREENS ? `Limite: no máximo ${MAX_SCREENS} pessoas transmitindo a tela ao mesmo tempo${BILLED_RELAY ? ' (para poupar a cota do TURN)' : ''}.` : 'Limite de transmissões de tela: nenhum.');
+
+const currentIce = () => {
+  const extra = [...secretIce(), ...dynamicIce];
+  return extra.length ? [...ICE, ...extra] : ICE;
+};
+const hasTurnConfig = !!((process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN) || process.env.ICE_URL);
+if (hasTurnConfig) refreshIce();
+if (process.env.TURN_SECRET && !process.env.TURN_URL) console.error('TURN: TURN_SECRET precisa de TURN_URL (ex.: turn:meu.servidor:3478). Ignorando.');
+else if (process.env.TURN_SECRET) console.log('TURN próprio (coturn) ligado: credenciais temporárias geradas aqui com o segredo.');
+
 /* ------------------------------------------------------------------ HTTP */
+
+/*
+ * Versão da interface: um resumo (hash) de todos os arquivos de app/. Muda sozinho a cada atualização do servidor.
+ * O app instalado consulta /version.json ao abrir e carrega a interface daqui, então atualizar o servidor atualiza todo mundo.
+ */
+function computeBuild() {
+  const h = crypto.createHash('sha1');
+  const walk = (dir, rel = '') => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const full = path.join(dir, name), r = rel ? `${rel}/${name}` : name;
+      const st = fs.statSync(full);
+      if (st.isDirectory()) walk(full, r);
+      else if (st.isFile()) { h.update(r); h.update('\0'); h.update(fs.readFileSync(full)); h.update('\0'); }
+    }
+  };
+  try { walk(APP_DIR); } catch { return 'desconhecida'; }
+  return h.digest('hex').slice(0, 8);
+}
+const BUILD = computeBuild();
+console.log(`Versão da interface: ${BUILD}`);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -62,6 +185,11 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' });
     return res.end('ok');
   }
+  if (url.pathname === '/version.json') {
+    // CORS aberto de propósito: o app instalado (outra origem) confere que este é um servidor da Resenha.
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+    return res.end(JSON.stringify({ app: 'resenha', build: BUILD }));
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
 
   let rel;
@@ -75,9 +203,12 @@ const server = http.createServer((req, res) => {
     const st = fs.statSync(file);
     if (!st.isFile()) throw new Error('not a file');
     const ext = path.extname(file).toLowerCase();
+    const etag = `W/"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { etag, 'cache-control': 'no-cache' }); return res.end(); }
     const headers = {
       'content-type': MIME[ext] || 'application/octet-stream',
       'content-length': st.size,
+      etag,
       'cache-control': 'no-cache',
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer',
@@ -243,10 +374,16 @@ class Conn {
         if (to && to !== mem && to.conn && !to.gone) to.conn.send({ t: 'signal', from: mem.id, data: m.data });
         break;
       }
-      case 'state':
-        mem.state = cleanState(m.state);
+      case 'state': {
+        const next = cleanState(m.state);
+        if (next.screen && !mem.state.screen && MAX_SCREENS > 0) {
+          const sharing = [...room.members.values()].filter((p) => p !== mem && !p.gone && p.state.screen).length;
+          if (sharing >= MAX_SCREENS) { next.screen = false; this.send({ t: 'limit', what: 'screen', max: MAX_SCREENS }); }
+        }
+        mem.state = next;
         broadcast(room, mem, { t: 'state', id: mem.id, state: mem.state });
         break;
+      }
       case 'chat': {
         const text = String(m.text || '').trim().slice(0, 500);
         if (text) broadcast(room, null, { t: 'chat', id: mem.id, name: mem.name, text, ts: Date.now() });
@@ -295,7 +432,7 @@ class Conn {
     const peers = [...room.members.values()]
       .filter((p) => p !== mem && !p.gone)
       .map((p) => ({ id: p.id, name: p.name, state: p.state }));
-    this.send({ t: 'welcome', id: mem.id, peers, ice: ICE, max: MAX_ROOM });
+    this.send({ t: 'welcome', id: mem.id, peers, ice: currentIce(), max: MAX_ROOM, limits: { screens: MAX_SCREENS }, build: BUILD });
   }
 
   onClose() {

@@ -6,6 +6,8 @@
   <title>Resenha</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="boot.js"></script>
 </head>
 <body>
 
@@ -117,16 +119,21 @@
     </select>
 
     <label for="selScrQ">Qualidade da tela</label>
-    <select id="selScrQ">
-      <option value="leve">Leve (720p, 15 quadros: bom para texto)</option>
-      <option value="equilibrado">Equilibrada (720p, 30 quadros)</option>
-      <option value="alta">Alta (1080p, 30 quadros)</option>
+    <select id="selScrQ" aria-describedby="scrHint">
+      <option value="leve">Leve (720p, gasta menos internet)</option>
+      <option value="equilibrado">Equilibrada (720p)</option>
+      <option value="alta">Alta (1080p)</option>
     </select>
+
+    <p class="hint" id="scrHint">A tela sai sempre a 60 quadros por segundo; a qualidade muda só a resolução.</p>
 
     <label class="check"><input type="checkbox" id="chkEco"> Economizar quando a janela estiver minimizada <small>Pede aos amigos para pararem de mandar vídeo enquanto você não está olhando.</small></label>
     <label class="check"><input type="checkbox" id="chkPreview"> Mostrar prévia da minha tela <small>Usa mais memória. Desligado por padrão.</small></label>
+    <label class="check"><input type="checkbox" id="chkStats"> Mostrar estatísticas da conexão <small>Mostra em cada vídeo a resolução, os quadros por segundo, a perda de pacotes e se a ligação é direta ou por relay. Serve para descobrir de onde vem um travamento.</small></label>
+    <div class="row"><button type="button" class="btn" id="btnDiag">Copiar diagnóstico</button></div>
 
     <p class="hint">Dica: ao compartilhar a tela com o som do computador, use fones para ninguém ouvir eco.</p>
+    <p class="hint" id="verInfo"></p>
 
     <div class="row end"><button class="btn primary" value="close">Pronto</button></div>
   </form>
@@ -134,7 +141,6 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

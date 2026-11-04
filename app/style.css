@@ -84,6 +84,8 @@ input:focus-visible, select:focus-visible { outline-offset: 0; border-color: var
 .tag .ic { width: 14px; height: 14px; color: var(--perigo); }
 .tag .ic[hidden] { display: none; }
 .tile.screen .tag { background: var(--lagoa); color: var(--noite); }
+.stats { position: absolute; left: 8px; top: 8px; max-width: calc(100% - 16px); padding: 3px 8px; border-radius: 8px; background: rgba(21, 19, 31, .85); color: var(--texto); font-size: 11px; line-height: 1.4; pointer-events: none; }
+.stats:empty { display: none; }
 
 /* ---------- Chat ---------- */
 .chat { width: 300px; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--borda); }

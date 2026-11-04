@@ -47,10 +47,17 @@ cp -r "$DIR/server" "$DIR/app" "$DEST/"
 chown -R root:root "$DEST"
 chmod -R a+rX "$DEST"
 
+# 3b) arquivo de configuração (TURN etc.): criado só se ainda não existir, nunca sobrescrito
+ENV_FILE="${ENV_FILE:-/etc/resenha.env}"
+if [ ! -e "$ENV_FILE" ]; then
+  echo "==> Criando $ENV_FILE (com exemplos comentados; só o administrador lê)"
+  install -m 600 -o root -g root "$DIR/deploy/resenha.env.exemplo" "$ENV_FILE"
+fi
+
 # 4) serviço que liga sozinho com o servidor
 echo "==> Instalando o serviço"
 mkdir -p "$UNIT_DIR"
-sed "s#/opt/resenha#$DEST#g" "$DIR/deploy/resenha.service" > "$UNIT_DIR/resenha.service"
+sed -e "s#/opt/resenha#$DEST#g" -e "s#/etc/resenha.env#$ENV_FILE#g" "$DIR/deploy/resenha.service" > "$UNIT_DIR/resenha.service"
 chmod 644 "$UNIT_DIR/resenha.service"
 systemctl daemon-reload
 systemctl enable resenha

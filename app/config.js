@@ -4,5 +4,5 @@
 //   - No app instalado, preencha com o seu servidor, por exemplo "resenha.exemplo.com"
 //     (ou deixe vazio e cada pessoa digita em "Servidor" na primeira vez).
 window.RESENHA_CONFIG = {
-  server: 'denkmc.tailf9dfd0.ts.net',
+  server: 'https://denkmc.tailf9dfd0.ts.net/',
 };

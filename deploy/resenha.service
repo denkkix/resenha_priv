@@ -10,6 +10,8 @@ WorkingDirectory=/opt/resenha
 Environment=PORT=8787
 # Só aceita conexões deste próprio computador: quem fica na frente é o Tailscale Funnel.
 Environment=HOST=127.0.0.1
+# Segredos opcionais (chave do TURN). O "-" faz o serviço subir normalmente se o arquivo não existir.
+EnvironmentFile=-/etc/resenha.env
 ExecStart=/usr/bin/env node /opt/resenha/server/server.js
 Restart=always
 RestartSec=3
