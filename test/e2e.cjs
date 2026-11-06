@@ -398,6 +398,9 @@ async function browserTests() {
   check(await until(B.page, () => /enviando \d+×\d+ · \d+ fps.*limite:/.test(window.__resenha.tiles.get('me').stats.textContent), null, 6000),
     'Bruno vê o que ele mesmo está enviando (fps, limite) na sua câmera');
   check(await until(B.page, (id) => { const t = window.__resenha.tiles.get(id + ':s'); return t && /recebendo/.test(t.stats.textContent); }, A.id, 6000), 'a tela da Ana também mostra estatísticas');
+  check(await until(A.page, async () => /sua tela \(enviando\).*alvo \d+ kbps.*codificador VP8/.test(await window.__resenha.buildDiag()), null, 10000), 'quem transmite vê alvo de envio e o codificador usado (para achar a causa de um fps baixo)', await A.page.evaluate(async () => (await window.__resenha.buildDiag()).split('\n').filter((l) => /sua tela/.test(l)).join(' | ')));
+  check(await until(B.page, (id) => /recebendo.*decodificador/.test(window.__resenha.tiles.get(id + ':s').stats.textContent), A.id, 8000), 'quem assiste vê o decodificador');
+  check(await A.page.evaluate(async () => /codificador/.test(await window.__resenha.buildDiag())), 'o diagnóstico copiado inclui o codificador');
   check(await until(B.page, () => /prévia \d+×\d+ · \d+ fps · \d+ ms da captura à tela/.test(window.__resenha.tiles.get('me').stats.textContent), null, 8000),
     'a prévia da própria câmera mostra resolução, fps e o atraso da captura até a tela', await B.page.evaluate(() => window.__resenha.tiles.get('me').stats.textContent));
   const prevLat = await B.page.evaluate(() => Number((window.__resenha.tiles.get('me').stats.textContent.match(/(\d+) ms da captura/) || [])[1]));
@@ -777,6 +780,7 @@ async function watchTests() {
     check(await until(A.page, () => /2 pessoas assistindo/.test(document.getElementById('live').textContent), null, 5000), 'Ana vê “2 pessoas assistindo”');
     check(await B.page.evaluate((id) => { const t = window.__resenha.tiles.get(id + ':s'); return getComputedStyle(t.cta).display === 'none' && getComputedStyle(t.leave).display !== 'none'; }, A.id), 'assistindo: some o botão Assistir e aparece “Sair da transmissão”');
 
+    check(await A.page.evaluate(() => [...window.__resenha.S.peers.values()].every((p) => p.pc.getTransceivers()[2].sender.getParameters().encodings[0].maxBitrate === 4500000)), 'com 2 assistindo em Equilibrada, cada um tem teto de 4,5 Mbps (e 60 fps)');
     // Bruno sai
     await B.page.click('.tile.screen .leave-stream');
     check(await until(A.page, () => /1 pessoa assistindo/.test(document.getElementById('live').textContent), null, 5000), 'Bruno saiu: volta a 1 pessoa assistindo');

@@ -80,7 +80,7 @@ Limite: isso atualiza a interface (HTML/CSS/JS) e o servidor, não o programa em
 - Câmera começa em 360p e a tela em 720p. Cada pessoa recebe um fluxo seu, então a taxa de envio é dividida automaticamente conforme a sala enche.
 - **Janela minimizada por mais de 6 segundos → os amigos param de mandar vídeo para você** (ajustável em Ajustes). Um alt-tab rápido não corta nada.
 - Prévia da própria tela vem desligada.
-- **Tela sempre a 60 quadros por segundo.** A qualidade (Ajustes) muda só a resolução e o teto de banda: Leve 720p/1,5 Mbps, Equilibrada 720p/2,5 Mbps, Alta 1080p/4,5 Mbps (tetos; o WebRTC usa menos se der). O envio de tela de cada pessoa fica limitado a 8 Mbps no total, dividido entre os amigos.
+- **Tela sempre a 60 quadros por segundo.** A qualidade (Ajustes) muda só a resolução e o teto de banda: Leve 720p/2,5 Mbps, Equilibrada 720p/4,5 Mbps, Alta 1080p/8 Mbps (tetos; o WebRTC usa menos se der). 60 fps pedem bem mais banda que 30: com teto baixo o WebRTC corta quadros e resolução. O envio de tela fica limitado a 16 Mbps no total, dividido só entre quem está assistindo.
 - Ao sair da sala, câmera, microfone, ligações e o contexto de áudio são liberados.
 - No servidor, o serviço é limitado a 150 MB e o Node usa bem menos que isso.
 
@@ -88,7 +88,7 @@ Para ver o consumo real no Windows: Gerenciador de Tarefas → aba *Detalhes* �
 
 ## O que foi testado e o que não foi
 
-`npm test` roda 191 verificações automáticas (precisa do [Playwright](https://playwright.dev) instalado): servidor (salas, repasse, sala cheia, queda e volta, mensagens inválidas) e **3 navegadores Chromium reais** com câmera e microfone de teste, conferindo voz, câmera, tela com som, chat, modo economia, reconexão e saída. Também testa o TURN contra uma Cloudflare **simulada** (pedido, renovação, queda e recuperação), o painel de estatísticas e o aviso de "sem conexão" numa rede com UDP bloqueado.
+`npm test` roda 194 verificações automáticas (precisa do [Playwright](https://playwright.dev) instalado): servidor (salas, repasse, sala cheia, queda e volta, mensagens inválidas) e **3 navegadores Chromium reais** com câmera e microfone de teste, conferindo voz, câmera, tela com som, chat, modo economia, reconexão e saída. Também testa o TURN contra uma Cloudflare **simulada** (pedido, renovação, queda e recuperação), o painel de estatísticas e o aviso de "sem conexão" numa rede com UDP bloqueado.
 
 Também foi testado o script `deploy/instalar-ubuntu.sh` com um `systemctl` simulado: o serviço roda como usuário sem poderes, não consegue alterar os próprios arquivos e recusa conexões que não venham do próprio computador.
 

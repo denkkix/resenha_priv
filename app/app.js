@@ -37,11 +37,12 @@
   // A tela sai sempre a 60 quadros por segundo (fixo). A qualidade muda só a resolução e o teto de banda.
   const SCR_FPS = 60;
   const SCR_Q = {
-    leve: { w: 1280, h: 720, fps: SCR_FPS, kbps: 1500, hint: 'motion' },
-    equilibrado: { w: 1280, h: 720, fps: SCR_FPS, kbps: 2500, hint: 'motion' },
-    alta: { w: 1920, h: 1080, fps: SCR_FPS, kbps: 4500, hint: 'motion' },
+    // 60 quadros por segundo pedem bem mais banda que 30: tetos baixos fazem o WebRTC cortar quadros e resolução.
+    leve: { w: 1280, h: 720, fps: SCR_FPS, kbps: 2500, hint: 'motion' },
+    equilibrado: { w: 1280, h: 720, fps: SCR_FPS, kbps: 4500, hint: 'motion' },
+    alta: { w: 1920, h: 1080, fps: SCR_FPS, kbps: 8000, hint: 'motion' },
   };
-  const scrSpec = () => ({ ...(SCR_Q[prefs.scrQ] || SCR_Q.equilibrado), pool: 8000 }); // pool: teto total de envio da tela, dividido entre os amigos
+  const scrSpec = () => ({ ...(SCR_Q[prefs.scrQ] || SCR_Q.equilibrado), pool: 16000 }); // pool: teto total de envio da tela, dividido só entre quem está assistindo
   const ROLE_MIC = 0, ROLE_CAM = 1, ROLE_SCR = 2, ROLE_SCRA = 3;
 
   /* ------------------------------------------------------------------ estado */
@@ -213,7 +214,7 @@
   function removePeer(id) {
     const p = S.peers.get(id); if (!p) return;
     S.peers.delete(id);
-    if (p.wantsScreen) { sendState(); renderControls(); }
+    if (p.wantsScreen) { sendState(); renderControls(); tuneAll(); }
     clearTimeout(p.rt); clearTimeout(p.watch);
     if (p.pc) { p.pc.onicecandidate = p.pc.ontrack = p.pc.onconnectionstatechange = null; try { p.pc.close(); } catch { /* já fechada */ } }
     for (const s of [p.camStream, p.scrStream]) s.getTracks().forEach((t) => s.removeTrack(t));
@@ -261,7 +262,7 @@
     if (d.ctl === 'watch') {
       // Um amigo clicou em "Assistir" (ou saiu): só quem pediu recebe a tela e o som dela.
       const on = !!d.on && !!L.scrV;
-      if (peer.wantsScreen !== on) { peer.wantsScreen = on; tune(peer); sendState(); renderControls(); }
+      if (peer.wantsScreen !== on) { peer.wantsScreen = on; tuneAll(); sendState(); renderControls(); }
       return;
     }
     if (d.sdp) {
@@ -331,7 +332,8 @@
     const n = Math.max(1, S.peers.size);
     const camQ = CAM_Q[prefs.camQ] || CAM_Q.leve, scrQ = scrSpec();
     const camMax = Math.max(250, Math.min(camQ.kbps, Math.floor(5000 / n))) * 1000;
-    const scrMax = Math.max(400, Math.min(scrQ.kbps, Math.floor(scrQ.pool / n))) * 1000;
+    const viewers = Math.max(1, [...S.peers.values()].filter((q) => q.wantsScreen).length); // a tela só vai para quem clicou em Assistir
+    const scrMax = Math.max(400, Math.min(scrQ.kbps, Math.floor(scrQ.pool / viewers))) * 1000;
     const set = (i, fn) => {
       const s = ts[i] && ts[i].sender; if (!s) return;
       try {
@@ -698,17 +700,33 @@
     const t = pc.getTransceivers()[role];
     const track = t && (dir === 'rx' ? t.receiver.track : t.sender.track);
     if (!track) return null;
-    let r = null, src = null;
+    let r = null, src = null, codecs = new Map(), pair = null;
     (await pc.getStats(track)).forEach((s) => {
       if (s.kind === 'video' && s.type === (dir === 'rx' ? 'inbound-rtp' : 'outbound-rtp')) r = s;
       if (s.type === 'media-source' && s.kind === 'video') src = s;
+      if (s.type === 'codec') codecs.set(s.id, s.mimeType || '');
+      if (s.type === 'candidate-pair' && (s.nominated || s.selected) && s.state === 'succeeded') pair = s;
     });
     if (!r) return null;
     const prev = last.get(key);
     last.set(key, { t: now, r });
     const o = { w: r.frameWidth || 0, h: r.frameHeight || 0, fps: Math.round(r.framesPerSecond || 0) };
     if (src && src.framesPerSecond) o.cap = Math.round(src.framesPerSecond);
-    if (dir === 'tx') o.limit = r.qualityLimitationReason || 'none';
+    const cod = (codecs.get(r.codecId) || '').replace('video/', '');
+    if (cod) o.codec = cod;
+    const impl = dir === 'tx' ? r.encoderImplementation : r.decoderImplementation;
+    if (impl) o.impl = impl + (r.powerEfficientEncoder || r.powerEfficientDecoder ? ' (hardware)' : '');
+    if (dir === 'tx') {
+      o.limit = r.qualityLimitationReason || 'none';
+      if (r.targetBitrate) o.target = Math.round(r.targetBitrate / 1000);
+      if (pair && pair.availableOutgoingBitrate) o.avail = Math.round(pair.availableOutgoingBitrate / 1000);
+      const d = r.qualityLimitationDurations;
+      if (d) { const tot = (d.bandwidth || 0) + (d.cpu || 0) + (d.none || 0) + (d.other || 0); if (tot > 3) o.durs = `internet ${Math.round(100 * (d.bandwidth || 0) / tot)}% · processador ${Math.round(100 * (d.cpu || 0) / tot)}%`; }
+      if (prev) { const n = (r.nackCount || 0) - (prev.r.nackCount || 0); if (n > 0) o.nack = n; }
+    } else {
+      if (r.framesDropped) o.dropped = r.framesDropped;
+      if (r.freezeCount) o.freezes = r.freezeCount;
+    }
     if (prev) {
       const dt = (now - prev.t) / 1000 || 1;
       const b = dir === 'rx' ? 'bytesReceived' : 'bytesSent';
@@ -732,7 +750,13 @@
     } else {
       if (o.cap) parts.push(`${role === ROLE_SCR ? 'captura' : 'webcam'} entrega ${o.cap} fps`);
       parts.push(`limite: ${LIMITS[o.limit] || o.limit}`);
+      if (o.target) parts.push(`alvo ${o.target} kbps`);
+      if (o.avail) parts.push(`upload estimado ${o.avail} kbps`);
+      if (o.durs) parts.push(`desde o início: ${o.durs}`);
+      if (o.nack) parts.push(`${o.nack} reenvios`);
     }
+    if (o.codec || o.impl) parts.push(`${dir === 'tx' ? 'codificador' : 'decodificador'} ${[o.codec, o.impl].filter(Boolean).join(' / ')}`);
+    if (dir === 'rx') { if (o.dropped) parts.push(`${o.dropped} quadros descartados`); if (o.freezes) parts.push(`${o.freezes} travadas`); }
     return `${dir === 'rx' ? 'recebendo' : 'enviando'} ${parts.join(' · ')}`;
   }
 
