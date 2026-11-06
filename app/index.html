@@ -127,15 +127,44 @@
 
     <p class="hint" id="scrHint">A tela sai sempre a 60 quadros por segundo; a qualidade muda só a resolução.</p>
 
+    <label class="check"><input type="checkbox" id="chkAuto"> Assistir as transmissões automaticamente <small>Por padrão a tela de um amigo só chega quando você clica em “Assistir”, o que economiza internet.</small></label>
     <label class="check"><input type="checkbox" id="chkEco"> Economizar quando a janela estiver minimizada <small>Pede aos amigos para pararem de mandar vídeo enquanto você não está olhando.</small></label>
     <label class="check"><input type="checkbox" id="chkPreview"> Mostrar prévia da minha tela <small>Usa mais memória. Desligado por padrão.</small></label>
     <label class="check"><input type="checkbox" id="chkStats"> Mostrar estatísticas da conexão <small>Mostra em cada vídeo a resolução, os quadros por segundo, a perda de pacotes e se a ligação é direta ou por relay. Serve para descobrir de onde vem um travamento.</small></label>
     <div class="row"><button type="button" class="btn" id="btnDiag">Copiar diagnóstico</button></div>
 
-    <p class="hint">Dica: ao compartilhar a tela com o som do computador, use fones para ninguém ouvir eco.</p>
+    <p class="hint">Som da tela: só o da janela que você escolher é compartilhado, nunca o do computador inteiro (se escolher a tela toda, vai sem som). Use fones para ninguém ouvir eco.</p>
     <p class="hint" id="verInfo"></p>
 
     <div class="row end"><button class="btn primary" value="close">Pronto</button></div>
+  </form>
+</dialog>
+
+<!-- Transmitir a tela: escolha antes de começar -->
+<dialog id="shareDlg">
+  <form method="dialog" class="settings">
+    <h2>Transmitir a tela</h2>
+
+    <label for="selShareType">O que transmitir</label>
+    <select id="selShareType" aria-describedby="shareHint">
+      <option value="window">Uma janela (com o som dela)</option>
+      <option value="browser">Uma aba do navegador (com o som dela)</option>
+      <option value="monitor">A tela inteira (sem som)</option>
+    </select>
+    <p class="hint" id="shareHint"></p>
+
+    <label for="selShareQ">Qualidade</label>
+    <select id="selShareQ">
+      <option value="leve">Leve (720p, gasta menos internet)</option>
+      <option value="equilibrado">Equilibrada (720p)</option>
+      <option value="alta">Alta (1080p)</option>
+    </select>
+    <p class="hint">Sempre a 60 quadros por segundo. Seus amigos só recebem o vídeo quando clicam em “Assistir”.</p>
+
+    <div class="row end">
+      <button type="button" class="btn" id="btnShareCancel">Cancelar</button>
+      <button type="button" class="btn primary" id="btnShareGo">Transmitir</button>
+    </div>
   </form>
 </dialog>
 

@@ -258,20 +258,33 @@ async function turnTests() {
 /* --------------------------------------------------------------- navegador */
 function stubScreen() {
   // Simula o seletor de tela (que não existe sem interface): canvas animado + tom de áudio.
-  navigator.mediaDevices.getDisplayMedia = async () => {
+  navigator.mediaDevices.getDisplayMedia = async (opts) => {
+    window.__asked = JSON.stringify(opts);
     const cv = document.createElement('canvas'); cv.width = 1280; cv.height = 720;
     const g = cv.getContext('2d'); let x = 0;
     setInterval(() => { g.fillStyle = '#123'; g.fillRect(0, 0, 1280, 720); g.fillStyle = '#fc4'; g.fillRect((x += 12) % 1200, 300, 80, 80); g.fillStyle = '#fff'; g.font = '48px sans-serif'; g.fillText('TELA COMPARTILHADA', 60, 120); }, 40);
     const vs = cv.captureStream(25);
     const ctx = new AudioContext(); const osc = ctx.createOscillator(); osc.frequency.value = 440;
     const dst = ctx.createMediaStreamDestination(); osc.connect(dst); osc.start();
-    return new MediaStream([vs.getVideoTracks()[0], dst.stream.getAudioTracks()[0]]);
+    const vt = vs.getVideoTracks()[0];
+    // Mesmo que o navegador mostrasse a tela inteira, janela ou aba: window.__surface escolhe (padrão: janela)
+    if (window.__surface !== null) { const surf = window.__surface === undefined ? 'window' : window.__surface; const gs = vt.getSettings.bind(vt); vt.getSettings = () => ({ ...gs(), displaySurface: surf }); }
+    return new MediaStream([vt, dst.stream.getAudioTracks()[0]]);
   };
 }
 
-async function openPeer(browser, name, code) {
+// Liga/desliga a transmissão como a pessoa faria: botão -> janela de escolha -> "Transmitir".
+async function toggleShare(p) {
+  await p.click('#bScr');
+  if (await p.evaluate(() => document.getElementById('shareDlg').open)) await p.click('#btnShareGo');
+}
+// Sem 'manual', o amigo assiste sozinho (preferência "assistir automaticamente"); com 'manual', só ao clicar em "Assistir".
+const seedAuto = () => () => { try { const k = 'resenha.prefs'; const v = JSON.parse(localStorage.getItem(k) || '{}'); if (v.autoWatch === undefined) { v.autoWatch = true; localStorage.setItem(k, JSON.stringify(v)); } } catch { /* ok */ } };
+
+async function openPeer(browser, name, code, manual = false) {
   const ctx = await browser.newContext({ permissions: ['camera', 'microphone', 'clipboard-read', 'clipboard-write'], viewport: { width: 1100, height: 700 } });
   await ctx.addInitScript(stubScreen);
+  if (!manual) await ctx.addInitScript(seedAuto());
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -335,7 +348,7 @@ async function browserTests() {
   }
 
   // tela da Ana, com a câmera do Bruno ligada ao mesmo tempo
-  await A.page.click('#bScr');
+  await toggleShare(A.page);
   for (const p of [B, C]) {
     const ok = await until(p.page, (id) => { const t = window.__resenha.tiles.get(id + ':s'); return t && t.video.videoWidth > 0; }, A.id);
     check(ok, `${p.name} vê a tela da Ana`);
@@ -355,6 +368,25 @@ async function browserTests() {
   await A.page.click('#bMic');
   check(await until(B.page, (id) => window.__resenha.S.peers.get(id).state.mic === false, A.id, 4000), 'silenciar a Ana aparece para os outros');
 
+  // regra do som: só o da janela; nunca o do computador inteiro
+  const asked = JSON.parse(await A.page.evaluate(() => window.__asked));
+  check(asked.windowAudio === 'window' && asked.systemAudio === 'exclude' && asked.video.displaySurface === 'window', 'a tela pede ao navegador só o áudio da janela (windowAudio) e nenhum som do sistema (systemAudio)', JSON.stringify(asked));
+  check(await A.page.evaluate(() => !!window.__resenha.L.scrA && window.__resenha.L.scrV.getSettings().displaySurface === 'window'), 'janela escolhida: o som dela é mantido');
+  await toggleShare(A.page); await sleep(500);
+  for (const [surface, aud, txt] of [['monitor', false, /tela inteira.*não é compartilhado/], ['browser', true, null], [undefined, false, /não consegui confirmar/]]) {
+    await A.page.evaluate((s) => { window.__surface = s === undefined ? null : s; document.getElementById('toast').hidden = true; }, surface === undefined ? null : surface);
+    await toggleShare(A.page); await sleep(600);
+    const r = await A.page.evaluate(() => ({ live: !!window.__resenha.L.scrV, audio: !!window.__resenha.L.scrA, tx: !!window.__resenha.S.peers.values().next().value.pc.getTransceivers()[3].sender.track, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent }));
+    const nome = surface === undefined ? 'sem informar o que foi escolhido' : surface === 'monitor' ? 'tela inteira' : 'aba do navegador';
+    check(r.live && r.audio === aud && r.tx === aud, `${nome}: ${aud ? 'o som é mantido' : 'o som NÃO é compartilhado (descartado e nada sai para os amigos)'}`, JSON.stringify(r));
+    if (txt) check(txt.test(r.toast), `${nome}: o app explica por que está sem som`, r.toast);
+    await toggleShare(A.page); await sleep(400);
+  }
+  await A.page.evaluate(() => { window.__surface = undefined; });
+  await toggleShare(A.page);
+  check(await until(A.page, () => !!window.__resenha.L.scrA, null, 5000), 'voltando a escolher uma janela, o som volta');
+  check((await growing(B.page, A.id, 2, 1500)).ok, 'o vídeo da tela volta a chegar nos amigos');
+
   // estatísticas da conexão (desligadas por padrão; Ana e Bruno ligam)
   check(await C.page.evaluate(() => [...window.__resenha.tiles.values()].every((t) => t.stats.hidden)), 'estatísticas vêm desligadas por padrão');
   for (const p of [A, B]) {
@@ -366,6 +398,10 @@ async function browserTests() {
   check(await until(B.page, () => /enviando \d+×\d+ · \d+ fps.*limite:/.test(window.__resenha.tiles.get('me').stats.textContent), null, 6000),
     'Bruno vê o que ele mesmo está enviando (fps, limite) na sua câmera');
   check(await until(B.page, (id) => { const t = window.__resenha.tiles.get(id + ':s'); return t && /recebendo/.test(t.stats.textContent); }, A.id, 6000), 'a tela da Ana também mostra estatísticas');
+  check(await until(B.page, () => /prévia \d+×\d+ · \d+ fps · \d+ ms da captura à tela/.test(window.__resenha.tiles.get('me').stats.textContent), null, 8000),
+    'a prévia da própria câmera mostra resolução, fps e o atraso da captura até a tela', await B.page.evaluate(() => window.__resenha.tiles.get('me').stats.textContent));
+  const prevLat = await B.page.evaluate(() => Number((window.__resenha.tiles.get('me').stats.textContent.match(/(\d+) ms da captura/) || [])[1]));
+  check(prevLat >= 0 && prevLat < 300, 'o atraso da prévia no app é pequeno (< 300 ms) no teste', String(prevLat));
   await shot(B.page, '2b-estatisticas');
   await B.page.click('#bSet'); await sleep(200);
   await B.page.click('#btnDiag');
@@ -434,7 +470,7 @@ async function browserTests() {
   check(await A.page.evaluate(() => window.__resenha.S.maxScreens === 0), 'servidor sem relay com cota: sem limite de transmissões de tela');
 
   // fim da transmissão
-  await A.page.click('#bScr');
+  await toggleShare(A.page);
   for (const p of [B, C]) check(await until(p.page, (id) => !window.__resenha.tiles.has(id + ':s'), A.id, 5000), `${p.name}: tela da Ana some ao parar`);
   await sleep(500);
   await shot(A.page, '3-sala-grade');
@@ -551,7 +587,7 @@ async function limitBrowserTests() {
     const code = 'lim-' + Math.floor(Math.random() * 9000 + 1000);
     const open = async (name) => {
       const ctx = await browser.newContext({ permissions: ['camera', 'microphone'], viewport: { width: 1100, height: 700 } });
-      await ctx.addInitScript(stubScreen);
+      await ctx.addInitScript(stubScreen); await ctx.addInitScript(seedAuto());
       const page = await ctx.newPage(); page.on('pageerror', (e) => console.log('  erro de página:', e));
       await page.goto(`http://127.0.0.1:${port}/`); await page.fill('#name', name); await page.fill('#code', code); await page.click('#joinBtn');
       await page.waitForSelector('#room:not([hidden])'); await page.waitForFunction(() => window.__resenha.S.id, null, { timeout: 8000 });
@@ -560,20 +596,20 @@ async function limitBrowserTests() {
     const A = await open('Ana'), B = await open('Bruno'), C = await open('Carla');
     for (const p of [A, B, C]) await p.waitForFunction(() => window.__resenha.S.peers.size === 2, null, { timeout: 15000 });
     check(await C.evaluate(() => window.__resenha.S.maxScreens) === 2, 'o app recebe o limite de transmissões do servidor');
-    await A.click('#bScr'); await B.click('#bScr');
+    await toggleShare(A); await toggleShare(B);
     check(await until(C, () => [...window.__resenha.S.peers.values()].filter((p) => p.state.screen).length === 2, null, 8000), 'Ana e Bruno transmitem a tela ao mesmo tempo');
-    await C.click('#bScr'); await sleep(400);
+    await toggleShare(C); await sleep(400);
     const msg = await C.evaluate(() => ({ live: !!window.__resenha.L.scrV, toast: document.getElementById('toast').textContent, hidden: document.getElementById('toast').hidden }));
     check(!msg.live && !msg.hidden && /Já há 2 pessoas transmitindo a tela/.test(msg.toast), 'Carla é avisada antes mesmo de abrir o seletor de tela', JSON.stringify(msg));
     // contorna a checagem do app para provar que o servidor também barra
     await C.evaluate(() => { window.__resenha.S.maxScreens = 0; document.getElementById('toast').hidden = true; });
-    await C.click('#bScr');
+    await toggleShare(C);
     check(await until(C, () => !window.__resenha.L.scrV && /Já há 2 pessoas/.test(document.getElementById('toast').textContent), null, 6000), 'se o app deixar passar, o servidor recusa e o app desliga a transmissão da Carla');
     check(await A.evaluate(() => { const ps = [...window.__resenha.S.peers.values()]; const c = ps.find((p) => p.name === 'Carla'); return c && !c.state.screen; }), 'Carla não aparece como transmitindo para os outros');
-    await B.click('#bScr');
+    await toggleShare(B);
     check(await until(C, () => [...window.__resenha.S.peers.values()].filter((p) => p.state.screen).length === 1, null, 5000), 'Bruno para de transmitir');
     await C.evaluate(() => { window.__resenha.S.maxScreens = 2; });
-    await C.click('#bScr');
+    await toggleShare(C);
     check(await until(C, () => !!window.__resenha.L.scrV, null, 5000), 'com uma vaga livre, a Carla consegue transmitir');
     check(await until(A, () => [...window.__resenha.S.peers.values()].filter((p) => p.state.screen).length === 1 && window.__resenha.S.peers.size === 2, null, 5000), 'a tela da Carla aparece para a Ana');
   } finally { await browser.close(); srv.kill(); }
@@ -675,6 +711,103 @@ async function updateTests() {
   } finally { servers.forEach((x) => { try { x.kill(); } catch { /* ok */ } }); fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 
+
+/* ------------------------------------------------ "Assistir" e janela de escolha */
+async function watchTests() {
+  console.log('\n== Transmissão estilo Discord (Assistir, escolha antes de transmitir) ==');
+  let chromium;
+  try { ({ chromium } = require('playwright')); } catch { console.log('  playwright não encontrado; pulando'); return; }
+  const browser = await chromium.launch({ args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--disable-features=WebRtcHideLocalIpsWithMdns'] });
+  try {
+    const code = 'watch-' + Math.floor(Math.random() * 9000 + 1000);
+    const A = await openPeer(browser, 'Ana', code, true);   // quem transmite
+    const B = await openPeer(browser, 'Bruno', code, true); // só assiste se clicar
+    const C = await openPeer(browser, 'Carla', code);       // assiste sozinha (preferência ligada)
+    for (const p of [A, B, C]) await p.page.waitForFunction(() => window.__resenha.S.peers.size === 2, null, { timeout: 15000 });
+    const asked = () => A.page.evaluate(() => JSON.parse(window.__asked));
+    const dlg = (page) => page.evaluate(() => document.getElementById('shareDlg').open);
+
+    // janela de escolha: abre, tem as 3 opções, cancelar não transmite
+    await A.page.click('#bScr');
+    check(await dlg(A.page), 'ao clicar em compartilhar, abre a janela de escolha em vez de já capturar');
+    check(await A.page.evaluate(() => [...document.getElementById('selShareType').options].map((o) => o.value).join()) === 'window,browser,monitor', 'a janela oferece: janela, aba e tela inteira');
+    check(await A.page.evaluate(() => document.getElementById('shareHint').textContent.length > 10), 'a janela explica como fica o som da opção escolhida');
+    await shot(A.page, '7b-janela-transmitir');
+    await A.page.click('#btnShareCancel');
+    check(!(await dlg(A.page)) && await A.page.evaluate(() => !window.__resenha.L.scrV), 'cancelar não começa a transmitir');
+
+    // tela inteira: sem pedir som, e o app lembra a escolha
+    await A.page.click('#bScr'); await A.page.selectOption('#selShareType', 'monitor'); await A.page.selectOption('#selShareQ', 'alta'); await A.page.click('#btnShareGo');
+    check(await until(A.page, () => !!window.__resenha.L.scrV, null, 5000), 'tela inteira: transmissão começa');
+    let o = await asked();
+    check(o.audio === false && o.video.displaySurface === 'monitor' && o.video.frameRate.max === 60, 'tela inteira: não pede som e pede 60 fps', JSON.stringify(o));
+    check(await A.page.evaluate(() => window.__resenha.prefs.scrQ === 'alta' && window.__resenha.prefs.shareType === 'monitor'), 'o app lembra o tipo e a qualidade escolhidos');
+    check(await A.page.evaluate(() => !document.getElementById('toast') || document.getElementById('toast').hidden || !/sem som/.test(document.getElementById('toast').textContent)), 'tela inteira escolhida de propósito: sem aviso de erro');
+    await toggleShare(A.page); await sleep(300);
+
+    // aba: não oferece a própria aba e mantém o som; janela: exclui telas inteiras
+    await A.page.click('#bScr'); await A.page.selectOption('#selShareType', 'browser'); await A.page.click('#btnShareGo');
+    await until(A.page, () => !!window.__resenha.L.scrV, null, 5000);
+    o = await asked();
+    check(o.video.displaySurface === 'browser' && o.selfBrowserSurface === 'exclude' && o.windowAudio === 'window', 'aba: pede a aba, sem a própria Resenha, com o som dela', JSON.stringify(o));
+    await toggleShare(A.page); await sleep(300);
+    await A.page.click('#bScr'); await A.page.selectOption('#selShareType', 'window'); await A.page.selectOption('#selShareQ', 'equilibrado'); await A.page.click('#btnShareGo');
+    await until(A.page, () => !!window.__resenha.L.scrV, null, 5000);
+    o = await asked();
+    check(o.video.displaySurface === 'window' && o.monitorTypeSurfaces === 'exclude' && o.windowAudio === 'window' && o.systemAudio === 'exclude', 'janela: pede janela, esconde telas inteiras e só o som dela', JSON.stringify(o));
+
+    // bloco "Assistir"
+    for (const p of [B, C]) check(await until(p.page, (id) => { const q = window.__resenha.S.peers.get(id); return q && q.state.screen; }, A.id, 5000), `${p.name} vê que a Ana está transmitindo`);
+    check(await until(C.page, (id) => window.__resenha.tiles.get(id + ':s').video.videoWidth > 0, A.id, 8000), 'Carla (assistir automático) recebe a tela');
+    const blockB = await B.page.evaluate((id) => { const t = window.__resenha.tiles.get(id + ':s'); const cs = (e) => getComputedStyle(e).display; return { locked: t.el.classList.contains('locked'), cta: cs(t.cta), leave: cs(t.leave), text: t.cta.textContent, hasStream: !!t.video.srcObject }; }, A.id);
+    check(blockB.locked && blockB.cta !== 'none' && blockB.leave === 'none' && !blockB.hasStream && /Ana está transmitindo a tela/.test(blockB.text) && /Assistir/.test(blockB.text), 'Bruno vê o bloco “Ana está transmitindo a tela” com o botão Assistir, sem vídeo', JSON.stringify(blockB));
+    const idle = await growing(B.page, A.id, 2, 1500);
+    const idleA = await growing(B.page, A.id, 3, 800);
+    check(!idle.ok && !idleA.ok, 'sem clicar em Assistir, nenhum vídeo nem som da tela chega ao Bruno', JSON.stringify([idle, idleA]));
+    check((await growing(C.page, A.id, 2, 1500)).ok && (await growing(C.page, A.id, 3, 1200)).ok, 'a Carla, que assiste, recebe vídeo e som da tela');
+    check(await until(B.page, (id) => window.__resenha.S.peers.get(id).state.viewers === 1, A.id, 5000), 'o contador mostra 1 pessoa assistindo (Bruno vê)');
+    check(await A.page.evaluate(() => /1 pessoa assistindo/.test(document.getElementById('live').textContent)), 'Ana vê “1 pessoa assistindo” no aviso de transmissão');
+    check(await B.page.evaluate((id) => /1 pessoa assistindo/.test(window.__resenha.tiles.get(id + ':s').cta.textContent), A.id), 'o bloco mostra quantas pessoas estão assistindo');
+
+    await shot(B.page, '7a-bloco-assistir');
+    // Bruno clica em Assistir
+    await B.page.click('.tile.screen .cta button');
+    check(await until(B.page, (id) => window.__resenha.tiles.get(id + ':s').video.videoWidth > 0, A.id, 8000), 'clicou em Assistir: o vídeo chega');
+    check((await growing(B.page, A.id, 2, 1500)).ok && (await growing(B.page, A.id, 3, 1200)).ok, 'Bruno passa a receber vídeo e som da tela');
+    check(await until(A.page, () => /2 pessoas assistindo/.test(document.getElementById('live').textContent), null, 5000), 'Ana vê “2 pessoas assistindo”');
+    check(await B.page.evaluate((id) => { const t = window.__resenha.tiles.get(id + ':s'); return getComputedStyle(t.cta).display === 'none' && getComputedStyle(t.leave).display !== 'none'; }, A.id), 'assistindo: some o botão Assistir e aparece “Sair da transmissão”');
+
+    // Bruno sai
+    await B.page.click('.tile.screen .leave-stream');
+    check(await until(A.page, () => /1 pessoa assistindo/.test(document.getElementById('live').textContent), null, 5000), 'Bruno saiu: volta a 1 pessoa assistindo');
+    await sleep(800);
+    check(!(await growing(B.page, A.id, 2, 1500)).ok, 'depois de sair, o vídeo para de chegar ao Bruno');
+    check((await growing(C.page, A.id, 2, 1200)).ok, 'a Carla continua assistindo normalmente');
+
+    // preferência "assistir automaticamente" ligada na hora
+    await B.page.evaluate(() => { document.getElementById('bSet').click(); });
+    await B.page.check('#chkAuto');
+    check(await until(B.page, (id) => window.__resenha.S.peers.get(id).watching === true, A.id, 3000), 'ligar “assistir automaticamente” já começa a assistir a transmissão em andamento');
+    await B.page.evaluate(() => document.getElementById('settings').close());
+
+    // a Ana para: tudo zera
+    await toggleShare(A.page);
+    check(await until(B.page, (id) => { const q = window.__resenha.S.peers.get(id); return q && !q.state.screen && !q.watching && !window.__resenha.tiles.has(id + ':s'); }, A.id, 5000), 'ao parar, o bloco some e ninguém fica “assistindo”');
+    check(await A.page.evaluate(() => [...window.__resenha.S.peers.values()].every((p) => !p.wantsScreen)), 'a Ana zera os espectadores');
+
+    // transmite de novo: Bruno (agora automático) assiste sem clicar; Carla também
+    await A.page.click('#bScr'); await A.page.click('#btnShareGo');
+    check(await until(B.page, (id) => { const t = window.__resenha.tiles.get(id + ':s'); return t && t.video.videoWidth > 0; }, A.id, 8000), 'nova transmissão: Bruno, com “automático”, recebe sem clicar');
+    check(await until(A.page, () => /2 pessoas assistindo/.test(document.getElementById('live').textContent), null, 6000), 'nova transmissão: 2 pessoas assistindo');
+
+    // servidor: contador de espectadores vem limitado (0..99, inteiro)
+    check(await A.page.evaluate(() => { const v = window.__resenha.S.peers.values().next().value.state.viewers; return Number.isInteger(v) && v >= 0 && v <= 99; }), 'o servidor repassa o contador como inteiro entre 0 e 99');
+
+    for (const p of [A, B, C]) check(p.errors.length === 0, `${p.name}: sem erros no console`, p.errors.join(' | '));
+    await shot(B.page, '7-assistir');
+  } finally { await browser.close(); }
+}
+
 /* ------------------------------------------- rede que bloqueia a ligação direta */
 async function blockedTests() {
   console.log('\n== Rede sem ligação direta (simulada) ==');
@@ -708,6 +841,7 @@ async function blockedTests() {
     if (!only || only === 'turn') await turnTests();
     if (!only || only === 'browser') await browserTests();
     if (!only || only === 'blocked') await blockedTests();
+    if (!only || only === 'watch') await watchTests();
     if (!only || only === 'update') await updateTests();
     if (!only || only === 'limit') { await limitServerTests(); await limitBrowserTests(); }
   } catch (e) {

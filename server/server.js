@@ -262,7 +262,7 @@ function dropMember(mem) {
 
 function cleanState(s) {
   s = s && typeof s === 'object' ? s : {};
-  return { mic: s.mic !== false, cam: !!s.cam, screen: !!s.screen };
+  return { mic: s.mic !== false, cam: !!s.cam, screen: !!s.screen, viewers: Math.max(0, Math.min(99, Math.floor(Number(s.viewers)) || 0)) };
 }
 
 class Conn {

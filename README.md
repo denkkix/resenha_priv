@@ -3,7 +3,8 @@
 Chamada de vídeo, voz e **tela ao mesmo tempo** com seus amigos, no estilo do Discord, feita para gastar pouca RAM.
 
 - Até **8 pessoas** por sala. Entra quem tiver o código da sala.
-- Câmera, microfone e compartilhamento de tela (com o som do computador) funcionam juntos.
+- Câmera, microfone e compartilhamento de tela (com o som **só da janela escolhida**) funcionam juntos.
+- **Transmissão estilo Discord:** ao transmitir você escolhe *janela, aba ou tela inteira* e a qualidade; os amigos veem um bloco **“Fulano está transmitindo a tela · N assistindo”** e só recebem o vídeo e o som quando clicam em **Assistir** (ou se ligarem “assistir automaticamente”). Quem não assiste não gasta internet, nem a cota do relay.
 - Chat de texto na sala.
 - Vídeo e áudio vão **direto entre vocês** (WebRTC, criptografado). O servidor só apresenta um amigo ao outro e leva o chat, por isso é minúsculo.
 - Zero dependências de terceiros no app e no servidor.
@@ -87,28 +88,31 @@ Para ver o consumo real no Windows: Gerenciador de Tarefas → aba *Detalhes* �
 
 ## O que foi testado e o que não foi
 
-`npm test` roda 145 verificações automáticas (precisa do [Playwright](https://playwright.dev) instalado): servidor (salas, repasse, sala cheia, queda e volta, mensagens inválidas) e **3 navegadores Chromium reais** com câmera e microfone de teste, conferindo voz, câmera, tela com som, chat, modo economia, reconexão e saída. Também testa o TURN contra uma Cloudflare **simulada** (pedido, renovação, queda e recuperação), o painel de estatísticas e o aviso de "sem conexão" numa rede com UDP bloqueado.
+`npm test` roda 191 verificações automáticas (precisa do [Playwright](https://playwright.dev) instalado): servidor (salas, repasse, sala cheia, queda e volta, mensagens inválidas) e **3 navegadores Chromium reais** com câmera e microfone de teste, conferindo voz, câmera, tela com som, chat, modo economia, reconexão e saída. Também testa o TURN contra uma Cloudflare **simulada** (pedido, renovação, queda e recuperação), o painel de estatísticas e o aviso de "sem conexão" numa rede com UDP bloqueado.
 
 Também foi testado o script `deploy/instalar-ubuntu.sh` com um `systemctl` simulado: o serviço roda como usuário sem poderes, não consegue alterar os próprios arquivos e recusa conexões que não venham do próprio computador.
 
 Não foi testado:
 
 - **O `deploy/instalar-turn.sh` num VPS de verdade e um coturn real** (só a geração do arquivo de configuração foi testada, e a senha temporária confere com o algoritmo documentado). Também não testei Oracle, Hetzner nem o Metered de verdade.
-- **O TURN contra a Cloudflare de verdade** (sem acesso a ela no ambiente de teste): o formato do pedido segue a documentação, mas o primeiro teste real é o Passo 1.8 do guia. Também não foi possível testar uma ligação que de fato passe por relay.
+- **O TURN contra a Cloudflare de verdade** (sem acesso a ela no ambiente de teste): o formato do pedido segue a documentação, mas o primeiro teste real é o 2.1 do guia. Também não foi possível testar uma ligação que de fato passe por relay.
 - **O app instalado carregando a interface do servidor dentro do Tauri/WebView2.** Testei a lógica (`boot.js`) num Chromium abrindo a cópia local por `file://`, com servidor no ar, fora do ar e de outro tipo. Falta confirmar no Windows: que o WebView2 aceita navegar para o endereço do servidor e que câmera, microfone e tela funcionam nessa origem. Se não aceitar, o app continua na cópia local (como antes), sem quebrar.
 - **O instalador em si** (a compilação do Tauri). O ambiente onde isto foi escrito não tinha acesso ao `crates.io` nem ao `npm`. O workflow e `src-tauri/` seguem o modelo padrão do Tauri 2, mas a primeira compilação é que vai dizer se algo precisa de ajuste.
-- **O script num Ubuntu com systemd de verdade**, e o **Tailscale Funnel** carregando WebSocket (a documentação do Funnel não cita WebSocket; o passo 1.7 do guia testa isso).
+- **O script num Ubuntu com systemd de verdade**, e o **Tailscale Funnel** carregando WebSocket (a documentação do Funnel não cita WebSocket; o passo 1.3 do guia testa isso).
 - **O seletor real de tela** do sistema: nos testes ele foi simulado. O caminho depois dele (enviar vídeo e som aos amigos) foi testado.
+- **Seletor de janelas com miniaturas dentro do app (como o do Discord): não existe.** A janela “Transmitir a tela” do app escolhe o *tipo* (janela, aba, tela inteira) e a qualidade e repassa isso ao navegador como dica; quem mostra a lista de janelas é o seletor do próprio sistema/WebView2. Um seletor próprio exigiria código nativo (Rust/Windows) que não dá para compilar nem testar aqui.
+- O botão **Assistir**, o contador e a economia de banda foram testados com 3 navegadores reais; o ganho de banda no mundo real (e na cota da Cloudflare) não foi medido.
 - **Mac e Linux dentro do Tauri**: o motor web desses sistemas pode não permitir compartilhar a tela. No Windows (WebView2, mesma base do Edge) o esperado é funcionar. Se faltar em outro sistema, use a Resenha pelo navegador.
 
 ## Limites conhecidos
 
 - Cada pessoa liga em todas as outras, então o **upload** de quem tem a internet mais lenta é o gargalo. Por isso o limite padrão é 8 pessoas.
 - Os 60 fps da tela foram testados com uma fonte de vídeo sintética; **com a captura de tela real no Windows não foi testado**. O número que vale é o do painel "Mostrar estatísticas" (`captura entrega … fps`).
-- Ao compartilhar a tela **com o som do computador**, os amigos podem ouvir eco se você não usar fones.
+- **Som da tela: só o da janela (ou aba) escolhida, nunca o do computador inteiro.** O app pede isso ao navegador (`windowAudio: 'window'`, `systemAudio: 'exclude'`, recurso do Chrome/Edge novos, a partir do 141 segundo o anúncio do Chromium) e **confere o resultado**: se você escolher a tela inteira, o áudio é descartado; se não der para saber o que foi escolhido, também. Se o sistema não oferecer o áudio da janela (versão antiga do WebView2/Chrome, ou Windows sem esse recurso), a tela vai sem som e o app avisa. Não testei com uma janela real no Windows: nos testes o seletor é simulado. O microfone da chamada não muda.
+- Com o som da janela, os amigos podem ouvir eco se você não usar fones.
 - Não há contas nem senha de sala: quem souber o código entra. Use códigos longos (o botão "Criar sala nova" já gera um).
 - O servidor enxerga nomes, códigos de sala e o chat (texto). Vídeo e áudio não passam por ele.
-- **Sem servidor TURN, quem estiver numa rede restrita (CGNAT, empresa, faculdade) pode não conseguir ver nem ouvir alguns amigos.** O Tailscale Funnel só leva o site e a sinalização, nunca o vídeo. Ligue o TURN (GUIA.md, Passo 1.8). Quando a ligação passa pelo relay, o upload de todos continua sendo usado e a cota do serviço de TURN também.
+- **Sem servidor TURN, quem estiver numa rede restrita (CGNAT, empresa, faculdade) pode não conseguir ver nem ouvir alguns amigos.** O Tailscale Funnel só leva o site e a sinalização, nunca o vídeo. Ligue o TURN (GUIA.md, Parte 2). Quando a ligação passa pelo relay, o upload de todos continua sendo usado e a cota do serviço de TURN também.
 - Quem souber o endereço público do servidor consegue pedir as credenciais de TURN (elas valem 12 h). É o preço de ter TURN sem contas; acompanhe o uso no painel da Cloudflare.
 
 ## Créditos

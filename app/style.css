@@ -84,7 +84,7 @@ input:focus-visible, select:focus-visible { outline-offset: 0; border-color: var
 .tag .ic { width: 14px; height: 14px; color: var(--perigo); }
 .tag .ic[hidden] { display: none; }
 .tile.screen .tag { background: var(--lagoa); color: var(--noite); }
-.stats { position: absolute; left: 8px; top: 8px; max-width: calc(100% - 16px); padding: 3px 8px; border-radius: 8px; background: rgba(21, 19, 31, .85); color: var(--texto); font-size: 11px; line-height: 1.4; pointer-events: none; }
+.stats { position: absolute; left: 8px; top: 8px; max-width: calc(100% - 16px); padding: 3px 8px; border-radius: 8px; background: rgba(21, 19, 31, .85); color: var(--texto); font-size: 11px; line-height: 1.4; white-space: pre-line; pointer-events: none; }
 .stats:empty { display: none; }
 
 /* ---------- Chat ---------- */
@@ -126,3 +126,10 @@ dialog::backdrop { background: rgba(10, 8, 18, .72); }
 .toast { position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%); max-width: min(560px, 92vw); padding: 11px 16px; border-radius: 12px; background: var(--elevado); border: 1px solid var(--borda); font-size: 14px; z-index: 20; }
 
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+
+/* Transmissão como bloco "Assistir" */
+.tile .cta, .tile .leave-stream { display: none; }
+.tile.locked .cta { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 12px; text-align: center; background: linear-gradient(160deg, var(--superficie), var(--elevado)); }
+.tile.locked .cta p { margin: 0; font-weight: 700; font-size: 16px; }
+.tile.locked .cta .btn { margin-top: 6px; }
+.tile.watching .leave-stream { display: inline-flex; position: absolute; top: 8px; right: 8px; z-index: 2; }

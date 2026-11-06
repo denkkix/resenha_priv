@@ -17,7 +17,7 @@
     set(k, v) { try { localStorage.setItem('resenha.' + k, JSON.stringify(v)); } catch { /* sem armazenamento */ } },
   };
   const prefs = Object.assign(
-    { name: '', server: '', mic: '', cam: '', spk: '', camQ: 'leve', scrQ: 'equilibrado', eco: true, preview: false, stats: false },
+    { name: '', server: '', mic: '', cam: '', spk: '', camQ: 'leve', scrQ: 'equilibrado', eco: true, preview: false, stats: false, autoWatch: false, shareType: 'window' },
     store.get('prefs', {})
   );
   const savePrefs = () => store.set('prefs', prefs);
@@ -26,7 +26,7 @@
     const q = new URLSearchParams(location.search).get('p');
     if (q) {
       const carry = JSON.parse(decodeURIComponent(escape(atob(q))));
-      if (!store.get('prefs', null)) for (const k of ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats']) if (carry[k] !== undefined && typeof carry[k] === typeof prefs[k]) prefs[k] = carry[k];
+      if (!store.get('prefs', null)) for (const k of ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats', 'autoWatch', 'shareType']) if (carry[k] !== undefined && typeof carry[k] === typeof prefs[k]) prefs[k] = carry[k];
       savePrefs();
       history.replaceState(null, '', location.pathname + location.hash);
     }
@@ -57,7 +57,7 @@
   for (const id of ['lobby', 'room', 'joinForm', 'name', 'code', 'server', 'adv', 'lobbyErr', 'joinBtn', 'createBtn',
     'stage', 'empty', 'roomCode', 'count', 'net', 'live', 'copyInvite', 'chat', 'msgs', 'chatForm', 'chatInput',
     'bMic', 'bCam', 'bScr', 'bChat', 'bSet', 'bLeave', 'settings', 'selMic', 'selCam', 'selSpk', 'spkRow',
-    'selCamQ', 'selScrQ', 'verInfo', 'chkEco', 'chkPreview', 'chkStats', 'btnDiag', 'toast']) el[id] = document.getElementById(id);
+    'selCamQ', 'selScrQ', 'verInfo', 'shareDlg', 'shareHint', 'selShareType', 'selShareQ', 'btnShareGo', 'btnShareCancel', 'chkAuto', 'chkEco', 'chkPreview', 'chkStats', 'btnDiag', 'toast']) el[id] = document.getElementById(id);
 
   /* ------------------------------------------------------------------- utils */
   let toastTimer = 0;
@@ -166,7 +166,11 @@
       case 'state': {
         const p = S.peers.get(m.id); if (!p) break;
         if (m.state.screen && !p.state.screen) { p.screenSince = Date.now(); S.focus = null; }
-        p.state = m.state; syncTiles();
+        const ended = p.state.screen && !m.state.screen;
+        p.state = m.state;
+        if (ended) p.watching = false;
+        else if (p.state.screen && prefs.autoWatch && !p.watching) setWatching(p, true);
+        syncTiles();
         break;
       }
       case 'chat': onChat(m); break;
@@ -180,7 +184,16 @@
   const warn = (e) => console.warn('[resenha]', e);
 
   function sendState() {
-    wsSend({ t: 'state', state: { mic: !!L.mic && L.micOn, cam: !!L.cam, screen: !!L.scrV } });
+    wsSend({ t: 'state', state: { mic: !!L.mic && L.micOn, cam: !!L.cam, screen: !!L.scrV, viewers: viewerCount() } });
+  }
+  const viewerCount = () => (L.scrV ? [...S.peers.values()].filter((p) => p.wantsScreen).length : 0);
+
+  // Assistir / sair da transmissão de um amigo (estilo "Go Live"): o vídeo só viaja para quem pediu.
+  function setWatching(p, on) {
+    if (!p || p.watching === on) return;
+    p.watching = on;
+    sig(p.id, { ctl: 'watch', on });
+    syncTiles();
   }
 
   /* ------------------------------------------------------------- pessoas / WebRTC */
@@ -188,9 +201,9 @@
     let peer = S.peers.get(p.id);
     if (peer) { if (p.name) peer.name = p.name; if (p.state) peer.state = p.state; return peer; }
     peer = {
-      id: p.id, name: p.name || 'Amigo', state: Object.assign({ mic: true, cam: false, screen: false }, p.state),
+      id: p.id, name: p.name || 'Amigo', state: Object.assign({ mic: true, cam: false, screen: false, viewers: 0 }, p.state),
       pc: null, camStream: new MediaStream(), scrStream: new MediaStream(),
-      offerer: false, q: Promise.resolve(), pending: [], rxVideo: true, tries: 0, rt: 0, screenSince: 0, watch: 0, stuck: false,
+      offerer: false, q: Promise.resolve(), pending: [], rxVideo: true, tries: 0, rt: 0, screenSince: 0, watch: 0, stuck: false, watching: false, wantsScreen: false,
     };
     if (peer.state.screen) peer.screenSince = Date.now();
     S.peers.set(p.id, peer);
@@ -200,6 +213,7 @@
   function removePeer(id) {
     const p = S.peers.get(id); if (!p) return;
     S.peers.delete(id);
+    if (p.wantsScreen) { sendState(); renderControls(); }
     clearTimeout(p.rt); clearTimeout(p.watch);
     if (p.pc) { p.pc.onicecandidate = p.pc.ontrack = p.pc.onconnectionstatechange = null; try { p.pc.close(); } catch { /* já fechada */ } }
     for (const s of [p.camStream, p.scrStream]) s.getTracks().forEach((t) => s.removeTrack(t));
@@ -244,6 +258,12 @@
   async function handleSignal(peer, d) {
     if (!d) return;
     if (d.ctl === 'rx') { peer.rxVideo = !!d.on; tune(peer); return; }
+    if (d.ctl === 'watch') {
+      // Um amigo clicou em "Assistir" (ou saiu): só quem pediu recebe a tela e o som dela.
+      const on = !!d.on && !!L.scrV;
+      if (peer.wantsScreen !== on) { peer.wantsScreen = on; tune(peer); sendState(); renderControls(); }
+      return;
+    }
     if (d.sdp) {
       if (d.sdp.type === 'offer') {
         const first = !peer.pc;
@@ -285,6 +305,8 @@
       clearTimeout(peer.rt); clearTimeout(peer.watch); peer.tries = 0; peer.stuck = false;
       tune(peer);
       if (document.hidden && prefs.eco) sig(peer.id, { ctl: 'rx', on: false });
+      if (peer.watching) sig(peer.id, { ctl: 'watch', on: true });             // religou: pede a tela de novo
+      else if (peer.state.screen && prefs.autoWatch) setWatching(peer, true);
     } else if ((st === 'disconnected' || st === 'failed') && peer.offerer) {
       clearTimeout(peer.rt);
       if (peer.tries < 4) peer.rt = setTimeout(() => restartIce(peer), st === 'failed' ? 300 : 4000);
@@ -321,7 +343,9 @@
     };
     set(ROLE_MIC, (e) => { e.maxBitrate = 40000; });
     set(ROLE_CAM, (e) => { e.maxBitrate = camMax; e.maxFramerate = camQ.fps; e.active = peer.rxVideo; });
-    set(ROLE_SCR, (e) => { e.maxBitrate = scrMax; e.maxFramerate = scrQ.fps; e.active = peer.rxVideo; });
+    // A tela só sai para quem clicou em "Assistir". O som dela continua mesmo com a janela do amigo minimizada.
+    set(ROLE_SCR, (e) => { e.maxBitrate = scrMax; e.maxFramerate = scrQ.fps; e.active = peer.rxVideo && peer.wantsScreen; });
+    set(ROLE_SCRA, (e) => { e.maxBitrate = 128000; e.active = peer.wantsScreen; });
   }
   const tuneAll = () => S.peers.forEach(tune);
 
@@ -373,30 +397,68 @@
   const limitMsg = (n) => `Já há ${n} ${n === 1 ? 'pessoa transmitindo' : 'pessoas transmitindo'} a tela. Quando uma parar, você pode transmitir.`;
   const sharingNow = () => [...S.peers.values()].filter((p) => p.state.screen).length;
 
+  const SHARE_HINT = {
+    window: 'Você escolhe a janela na tela do sistema. Só o som dessa janela é compartilhado.',
+    browser: 'Você escolhe a aba. O som dela vai junto.',
+    monitor: 'A tela toda aparece para os amigos. O som do computador não é compartilhado.',
+  };
+  // Tipo escolhido -> dicas que o navegador entende (ele pode ignorá-las; o som é conferido depois).
+  function shareOptions(type, q) {
+    const video = { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps }, displaySurface: type };
+    const o = { video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, windowAudio: 'window', systemAudio: 'exclude' };
+    if (type === 'monitor') { o.audio = false; delete o.windowAudio; }
+    else o.monitorTypeSurfaces = 'exclude';
+    if (type === 'browser') o.selfBrowserSurface = 'exclude';
+    return o;
+  }
+  function openShareDialog() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return toast('Este sistema não deixa compartilhar a tela.');
+    if (S.maxScreens && sharingNow() >= S.maxScreens) return toast(limitMsg(S.maxScreens));
+    el.selShareType.value = prefs.shareType; el.selShareQ.value = prefs.scrQ;
+    el.shareHint.textContent = SHARE_HINT[el.selShareType.value] || '';
+    if (typeof el.shareDlg.showModal === 'function') el.shareDlg.showModal(); else startShare();
+  }
+
   async function startShare() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return toast('Este sistema não deixa compartilhar a tela.');
     if (S.maxScreens && sharingNow() >= S.maxScreens) return toast(limitMsg(S.maxScreens)); // o servidor também confere
-    const q = scrSpec();
+    const q = scrSpec(), type = prefs.shareType;
     let s;
-    try {
-      s = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps } },
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      });
-    } catch (e) { if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast('Não consegui compartilhar a tela.'); return; }
-    L.scrV = s.getVideoTracks()[0]; L.scrA = s.getAudioTracks()[0] || null;
+    try { s = await navigator.mediaDevices.getDisplayMedia(shareOptions(type, q)); } catch (e) { if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast('Não consegui compartilhar a tela.'); return; }
+    L.scrV = s.getVideoTracks()[0];
+    const pick = shareAudioPolicy(s, L.scrV);
+    L.scrA = pick.audio;
     if ('contentHint' in L.scrV) L.scrV.contentHint = q.hint;
     L.scrV.addEventListener('ended', stopShare);
     await pushTrack(ROLE_SCR, L.scrV); await pushTrack(ROLE_SCRA, L.scrA);
     tuneAll(); sendState(); syncTiles(); renderControls();
-    if (!L.scrA) toast('Sua tela está no ar, mas sem o som do computador.');
+    if (pick.why === 'monitor') toast('Você escolheu a tela inteira: o som do computador não é compartilhado. Para compartilhar o som, escolha uma janela.', 8000);
+    else if (!L.scrA && type !== 'monitor') toast(pick.why === 'unknown' ? 'Sua tela está no ar, sem som: não consegui confirmar de onde viria o áudio.' : 'Sua tela está no ar, sem som: este sistema não ofereceu o áudio dessa janela.', 8000);
+  }
+
+  /*
+   * Regra do som da tela: só o áudio da JANELA (ou da aba) escolhida. Nunca o som do computador inteiro.
+   * O navegador recebe a dica windowAudio:'window', mas dicas podem ser ignoradas; por isso aqui o app confere o que veio:
+   *  - tela inteira ('monitor') com áudio  => é o som do sistema todo: descartado
+   *  - janela ou aba ('window'/'browser')   => mantido
+   *  - não deu para saber o que foi escolhido => descartado, por segurança
+   */
+  function shareAudioPolicy(stream, video) {
+    const tracks = stream.getAudioTracks();
+    if (!tracks.length) return { audio: null, why: 'none' };
+    let surface;
+    try { surface = video.getSettings().displaySurface; } catch { /* ok */ }
+    if (surface === 'window' || surface === 'browser') return { audio: tracks[0], why: '' };
+    for (const t of tracks) { try { t.stop(); } catch { /* ok */ } try { stream.removeTrack(t); } catch { /* ok */ } }
+    return { audio: null, why: surface === 'monitor' ? 'monitor' : 'unknown' };
   }
 
   function stopShare() {
     if (!L.scrV) return;
     for (const t of [L.scrV, L.scrA]) if (t) t.stop();
     L.scrV = L.scrA = null;
-    pushTrack(ROLE_SCR, null); pushTrack(ROLE_SCRA, null);
+    S.peers.forEach((p) => { p.wantsScreen = false; });
+    pushTrack(ROLE_SCR, null); pushTrack(ROLE_SCRA, null); tuneAll();
     sendState(); syncTiles(); renderControls();
   }
 
@@ -451,10 +513,24 @@
     tag.append(mic, label);
     const stats = document.createElement('div'); stats.className = 'stats'; stats.hidden = !prefs.stats;
     root.append(video, avatar, tag, stats);
+    const t0 = { cta: null, ctaText: null, ctaBtn: null, leave: null };
+    if (kind === 'screen' && key !== 'me:s') {
+      const cta = document.createElement('div'); cta.className = 'cta';
+      const ctaText = document.createElement('p');
+      const ctaSub = document.createElement('small'); ctaSub.className = 'muted';
+      const ctaBtn = document.createElement('button'); ctaBtn.type = 'button'; ctaBtn.className = 'btn primary'; ctaBtn.textContent = 'Assistir';
+      cta.append(ctaText, ctaSub, ctaBtn);
+      const leave = document.createElement('button'); leave.type = 'button'; leave.className = 'mini leave-stream'; leave.textContent = 'Sair da transmissão';
+      root.append(cta, leave);
+      Object.assign(t0, { cta, ctaText, ctaSub, ctaBtn, leave });
+      const pid = key.slice(0, -2);
+      ctaBtn.addEventListener('click', (e) => { e.stopPropagation(); setWatching(S.peers.get(pid), true); });
+      leave.addEventListener('click', (e) => { e.stopPropagation(); setWatching(S.peers.get(pid), false); });
+    }
     root.addEventListener('click', () => { S.focus = (focusKey() === key) ? '-' : key; layout(); });
     root.addEventListener('dblclick', () => { if (document.fullscreenElement) document.exitFullscreen(); else root.requestFullscreen && root.requestFullscreen().catch(() => {}); });
     el.stage.appendChild(root);
-    const t = { key, kind, el: root, video, avatar, label, mic, stats, src: null };
+    const t = { key, kind, el: root, video, avatar, label, mic, stats, src: null, ...t0 };
     tiles.set(key, t);
     if (prefs.spk && video.setSinkId) video.setSinkId(prefs.spk).catch(() => {});
     return t;
@@ -510,10 +586,18 @@
         t.mic.style.display = p.state.mic === false ? '' : 'none';
         ensureMeter(p.id, p.camStream.getAudioTracks()[0]);
       } else {
-        t.label.textContent = `Tela de ${p.name}`;
+        const v = p.state.viewers || 0;
+        t.label.textContent = `Tela de ${p.name}${v ? ` · ${v} assistindo` : ''}`;
         t.video.muted = false;
-        setSrc(t, p.scrStream, `${p.id}:s`);
-        t.el.classList.remove('novideo'); t.mic.style.display = 'none';
+        setSrc(t, p.watching ? p.scrStream : null, `${p.id}:s${p.watching ? 1 : 0}`);
+        t.el.classList.toggle('locked', !p.watching);
+        t.el.classList.toggle('watching', p.watching);
+        t.el.classList.toggle('novideo', !p.watching);
+        t.mic.style.display = 'none';
+        if (t.ctaText) {
+          t.ctaText.textContent = `${p.name} está transmitindo a tela`;
+          t.ctaSub.textContent = v ? `${v} ${v === 1 ? 'pessoa assistindo' : 'pessoas assistindo'}` : 'Ninguém assistindo ainda';
+        }
       }
     }
 
@@ -652,6 +736,35 @@
     return `${dir === 'rx' ? 'recebendo' : 'enviando'} ${parts.join(' · ')}`;
   }
 
+  // Prévia da minha câmera: quadros por segundo realmente mostrados e o tempo entre a captura e a tela.
+  // Se o atraso aparece aqui, é do aplicativo/vídeo; se esse número é baixo e a imagem ainda parece atrasada, é a webcam
+  // (pouca luz, efeitos do Windows, USB) que entrega a imagem tarde.
+  const prev = { fps: 0, lat: null, n: 0, last: 0, t: 0, v: null };
+  function watchPreview() {
+    const t = tiles.get('me'), v = t && t.video;
+    if (!v || !L.cam || !v.requestVideoFrameCallback || prev.v === v) return;
+    prev.v = v;
+    const cb = (now, md) => {
+      if (prev.v !== v) return;
+      if (!prefs.stats) { prev.v = null; return; }
+      if (typeof md.captureTime === 'number') {
+        const lat = (md.presentationTime || now) - md.captureTime;
+        if (lat >= 0 && lat < 5000) prev.lat = prev.lat === null ? lat : prev.lat * 0.8 + lat * 0.2;
+      }
+      prev.n = md.presentedFrames;
+      v.requestVideoFrameCallback(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+  }
+  function previewText(now) {
+    if (!L.cam) { prev.fps = 0; prev.lat = null; prev.t = 0; return ''; }
+    watchPreview();
+    if (prev.t) { const dt = (now - prev.t) / 1000; if (dt > 0.5) { prev.fps = Math.round(Math.max(0, (prev.n - prev.last) / dt)); prev.last = prev.n; prev.t = now; } }
+    else { prev.last = prev.n; prev.t = now; }
+    const cs = L.cam.getSettings ? L.cam.getSettings() : {};
+    return `prévia ${cs.width || '?'}×${cs.height || '?'} · ${prev.fps} fps${prev.lat !== null ? ` · ${Math.round(prev.lat)} ms da captura à tela` : ''}`;
+  }
+
   async function pollStats() {
     if (document.hidden || el.room.hidden) return;
     const now = performance.now();
@@ -667,17 +780,20 @@
         const join = (a) => [a, via].filter(Boolean).join(' · ');
         const cam = p.state.cam ? await readVideo(p.pc, ROLE_CAM, 'rx', p.id, now) : null;
         statText.set(p.id, join(p.state.cam ? (cam ? fmt(cam, 'rx', ROLE_CAM) : 'sem imagem') : 'câmera desligada'));
-        if (p.state.screen) {
+        if (p.state.screen && p.watching) {
           const scr = await readVideo(p.pc, ROLE_SCR, 'rx', `${p.id}:s`, now);
           statText.set(`${p.id}:s`, join(scr ? fmt(scr, 'rx', ROLE_SCR) : 'sem imagem'));
         }
       } catch { /* a ligação estava mudando */ }
     }));
+    const pv = previewText(now);
     if (L.cam && live[0]) {
-      try { const tx = await readVideo(live[0].pc, ROLE_CAM, 'tx', 'me', now); statText.set('me', tx ? fmt(tx, 'tx', ROLE_CAM) : ''); } catch { /* ok */ }
-    } else statText.set('me', L.cam ? 'sem ninguém para receber' : '');
-    if (L.scrV && live[0]) {
-      try { const tx = await readVideo(live[0].pc, ROLE_SCR, 'tx', 'me:s', now); statText.set('me:s', tx ? fmt(tx, 'tx', ROLE_SCR) : ''); } catch { /* ok */ }
+      try { const tx = await readVideo(live[0].pc, ROLE_CAM, 'tx', 'me', now); statText.set('me', [pv, tx ? fmt(tx, 'tx', ROLE_CAM) : ''].filter(Boolean).join('\n')); } catch { /* ok */ }
+    } else statText.set('me', L.cam ? [pv, 'sem ninguém para receber'].join('\n') : '');
+    const viewer = live.find((p) => p.wantsScreen);
+    if (L.scrV && !viewer) statText.set('me:s', 'ninguém assistindo a sua tela ainda');
+    else if (L.scrV && viewer) {
+      try { const tx = await readVideo(viewer.pc, ROLE_SCR, 'tx', 'me:s', now); statText.set('me:s', tx ? fmt(tx, 'tx', ROLE_SCR) : ''); } catch { /* ok */ }
     } else statText.delete('me:s');
     if (prefs.stats) tiles.forEach((t) => { t.stats.textContent = statText.get(t.key) || ''; });
   }
@@ -750,6 +866,8 @@
     el.bChat.title = S.chatOpen ? 'Fechar chat' : 'Abrir chat';
     if (S.unread) el.bChat.dataset.badge = S.unread > 9 ? '9+' : String(S.unread); else delete el.bChat.dataset.badge;
     el.live.hidden = !L.scrV;
+    const v = viewerCount();
+    el.live.textContent = `Você está transmitindo a tela · ${v ? `${v} ${v === 1 ? 'pessoa assistindo' : 'pessoas assistindo'}` : 'ninguém assistindo ainda'}`;
   }
 
   async function fillDevices() {
@@ -767,7 +885,7 @@
     fill(el.selSpk, 'audiooutput', prefs.spk, 'Padrão do sistema', 'Saída');
     el.spkRow.hidden = !(HTMLMediaElement.prototype.setSinkId);
     el.selCamQ.value = prefs.camQ; el.selScrQ.value = prefs.scrQ;
-    el.chkEco.checked = !!prefs.eco; el.chkPreview.checked = !!prefs.preview; el.chkStats.checked = !!prefs.stats;
+    el.chkAuto.checked = !!prefs.autoWatch; el.chkEco.checked = !!prefs.eco; el.chkPreview.checked = !!prefs.preview; el.chkStats.checked = !!prefs.stats;
   }
 
   /* ---------------------------------------------------------------- entrar / sair */
@@ -822,7 +940,15 @@
 
   el.bMic.addEventListener('click', toggleMic);
   el.bCam.addEventListener('click', () => setCam(!L.cam));
-  el.bScr.addEventListener('click', () => (L.scrV ? stopShare() : startShare()));
+  el.bScr.addEventListener('click', () => (L.scrV ? stopShare() : openShareDialog()));
+  el.selShareType.addEventListener('change', () => { prefs.shareType = el.selShareType.value; savePrefs(); el.shareHint.textContent = SHARE_HINT[prefs.shareType] || ''; });
+  el.selShareQ.addEventListener('change', () => { prefs.scrQ = el.selShareQ.value; el.selScrQ.value = prefs.scrQ; savePrefs(); });
+  el.btnShareCancel.addEventListener('click', () => el.shareDlg.close());
+  el.btnShareGo.addEventListener('click', () => { prefs.shareType = el.selShareType.value; prefs.scrQ = el.selShareQ.value; el.selScrQ.value = prefs.scrQ; savePrefs(); el.shareDlg.close(); startShare(); });
+  el.chkAuto.addEventListener('change', () => {
+    prefs.autoWatch = el.chkAuto.checked; savePrefs();
+    if (prefs.autoWatch) S.peers.forEach((p) => { if (p.state.screen && !p.watching) setWatching(p, true); });
+  });
   el.bChat.addEventListener('click', () => toggleChat());
   el.bLeave.addEventListener('click', () => leave());
   el.bSet.addEventListener('click', async () => { await fillDevices(); el.settings.showModal(); });
