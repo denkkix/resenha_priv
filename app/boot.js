@@ -23,7 +23,7 @@
   // Leva as preferências (nome, qualidade...) para a interface do servidor, que guarda as dela em outro lugar.
   // Os dispositivos (câmera/microfone) não vão: o número deles muda de uma origem para outra.
   var carry = {};
-  ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats', 'autoWatch', 'shareType'].forEach(function (k) { if (prefs[k] !== undefined) carry[k] = prefs[k]; });
+  ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats', 'autoWatch', 'shareType', 'scrCodec'].forEach(function (k) { if (prefs[k] !== undefined) carry[k] = prefs[k]; });
   var q = '';
   try { q = '?p=' + encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(carry))))); } catch (e) { q = ''; }
 

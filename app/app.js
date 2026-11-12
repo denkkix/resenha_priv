@@ -17,7 +17,7 @@
     set(k, v) { try { localStorage.setItem('resenha.' + k, JSON.stringify(v)); } catch { /* sem armazenamento */ } },
   };
   const prefs = Object.assign(
-    { name: '', server: '', mic: '', cam: '', spk: '', camQ: 'leve', scrQ: 'equilibrado', eco: true, preview: false, stats: false, autoWatch: false, shareType: 'window' },
+    { name: '', server: '', mic: '', cam: '', spk: '', camQ: 'leve', scrQ: 'equilibrado', eco: true, preview: false, stats: false, autoWatch: false, shareType: 'window', scrCodec: 'auto' },
     store.get('prefs', {})
   );
   const savePrefs = () => store.set('prefs', prefs);
@@ -26,7 +26,7 @@
     const q = new URLSearchParams(location.search).get('p');
     if (q) {
       const carry = JSON.parse(decodeURIComponent(escape(atob(q))));
-      if (!store.get('prefs', null)) for (const k of ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats', 'autoWatch', 'shareType']) if (carry[k] !== undefined && typeof carry[k] === typeof prefs[k]) prefs[k] = carry[k];
+      if (!store.get('prefs', null)) for (const k of ['name', 'camQ', 'scrQ', 'eco', 'preview', 'stats', 'autoWatch', 'shareType', 'scrCodec']) if (carry[k] !== undefined && typeof carry[k] === typeof prefs[k]) prefs[k] = carry[k];
       savePrefs();
       history.replaceState(null, '', location.pathname + location.hash);
     }
@@ -58,7 +58,7 @@
   for (const id of ['lobby', 'room', 'joinForm', 'name', 'code', 'server', 'adv', 'lobbyErr', 'joinBtn', 'createBtn',
     'stage', 'empty', 'roomCode', 'count', 'net', 'live', 'copyInvite', 'chat', 'msgs', 'chatForm', 'chatInput',
     'bMic', 'bCam', 'bScr', 'bChat', 'bSet', 'bLeave', 'settings', 'selMic', 'selCam', 'selSpk', 'spkRow',
-    'selCamQ', 'selScrQ', 'verInfo', 'shareDlg', 'shareHint', 'selShareType', 'selShareQ', 'btnShareGo', 'btnShareCancel', 'chkAuto', 'chkEco', 'chkPreview', 'chkStats', 'btnDiag', 'toast']) el[id] = document.getElementById(id);
+    'selCamQ', 'selScrQ', 'verInfo', 'shareDlg', 'shareHint', 'selShareType', 'selShareQ', 'btnShareGo', 'btnShareCancel', 'chkAuto', 'selScrCodec', 'chkEco', 'chkPreview', 'chkStats', 'btnDiag', 'toast']) el[id] = document.getElementById(id);
 
   /* ------------------------------------------------------------------- utils */
   let toastTimer = 0;
@@ -251,6 +251,7 @@
     peer.offerer = true;
     const pc = makePC(peer);
     for (const kind of ['audio', 'video', 'video', 'audio']) pc.addTransceiver(kind, { direction: 'sendrecv' });
+    preferCodec(pc);
     await attachLocal(peer);
     await pc.setLocalDescription(await pc.createOffer());
     sig(peer.id, { sdp: pc.localDescription.toJSON() });
@@ -272,6 +273,7 @@
         await pc.setRemoteDescription(d.sdp);
         if (first) {
           pc.getTransceivers().forEach((t) => { t.direction = 'sendrecv'; });
+          preferCodec(pc);
           await attachLocal(peer);
         }
         await pc.setLocalDescription(await pc.createAnswer());
@@ -323,6 +325,18 @@
       await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
       sig(peer.id, { sdp: pc.localDescription.toJSON() });
     }).catch(warn);
+  }
+
+  // Opção experimental: a tela prefere H.264, que o Windows pode codificar na placa de vídeo (alivia o processador).
+  // Só vale se os dois lados escolherem H.264; senão a ligação continua em VP8, como sempre.
+  function preferCodec(pc) {
+    if (prefs.scrCodec !== 'h264') return;
+    try {
+      const t = pc.getTransceivers()[ROLE_SCR];
+      const caps = RTCRtpReceiver.getCapabilities('video').codecs;
+      const h = caps.filter((c) => /^video\/H264$/i.test(c.mimeType));
+      if (t && t.setCodecPreferences && h.length) t.setCodecPreferences([...h, ...caps.filter((c) => !h.includes(c))]);
+    } catch (e) { warn(e); }
   }
 
   /* Ajusta taxa de envio conforme o número de pessoas (cada uma recebe um fluxo seu) e o modo economia. */
@@ -401,19 +415,25 @@
 
   const SHARE_HINT = {
     window: 'Você escolhe a janela na tela do sistema. Só o som dessa janela é compartilhado.',
+    'window-silent': 'Como “uma janela”, mas sem pedir o som. Use se a janela escolhida (principalmente de navegador, como Chrome ou Edge) trava ou não começa.',
     browser: 'Você escolhe a aba. O som dela vai junto.',
     monitor: 'A tela toda aparece para os amigos. O som do computador não é compartilhado.',
   };
   // Tipo escolhido -> dicas que o navegador entende (ele pode ignorá-las; o som é conferido depois).
   function shareOptions(type, q) {
-    const video = { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps }, displaySurface: type };
+    const silent = type === 'window-silent' || type === 'monitor';
+    const video = { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps }, displaySurface: type === 'window-silent' ? 'window' : type };
     const o = { video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, windowAudio: 'window', systemAudio: 'exclude' };
-    if (type === 'monitor') { o.audio = false; delete o.windowAudio; }
-    else o.monitorTypeSurfaces = 'exclude';
+    if (silent) { o.audio = false; delete o.windowAudio; }
+    if (type !== 'monitor') o.monitorTypeSurfaces = 'exclude';
     if (type === 'browser') o.selfBrowserSurface = 'exclude';
     return o;
   }
+  // O navegador só aceita um pedido de captura por vez e não dá para cancelá-lo: se o Windows deixa um pendurado,
+  // novas tentativas ficam presas atrás dele. O app avisa o que fazer em vez de parecer quebrado.
+  const PENDING_MSG = 'Ainda há um pedido de captura em andamento. Se o seletor estiver aberto, escolha nele (ou feche-o). Se ele sumiu, o Windows travou o pedido: aperte F5 (ou feche e abra o app) e entre de novo na sala.';
   function openShareDialog() {
+    if (S.sharePending) return toast(PENDING_MSG, 14000);
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return toast('Este sistema não deixa compartilhar a tela.');
     if (S.maxScreens && sharingNow() >= S.maxScreens) return toast(limitMsg(S.maxScreens));
     el.selShareType.value = prefs.shareType; el.selShareQ.value = prefs.scrQ;
@@ -424,18 +444,53 @@
   async function startShare() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return toast('Este sistema não deixa compartilhar a tela.');
     if (S.maxScreens && sharingNow() >= S.maxScreens) return toast(limitMsg(S.maxScreens)); // o servidor também confere
+    if (S.sharePending) return toast(PENDING_MSG, 14000);
     const q = scrSpec(), type = prefs.shareType;
     let s;
-    try { s = await navigator.mediaDevices.getDisplayMedia(shareOptions(type, q)); } catch (e) { if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast('Não consegui compartilhar a tela.'); return; }
-    L.scrV = s.getVideoTracks()[0];
-    const pick = shareAudioPolicy(s, L.scrV);
-    L.scrA = pick.audio;
-    if ('contentHint' in L.scrV) L.scrV.contentHint = q.hint;
-    L.scrV.addEventListener('ended', stopShare);
-    await pushTrack(ROLE_SCR, L.scrV); await pushTrack(ROLE_SCRA, L.scrA);
-    tuneAll(); sendState(); syncTiles(); renderControls();
+    shareLog(`pedi a captura ao sistema (${type}${'audio' in shareOptions(type, q) && shareOptions(type, q).audio ? ', com áudio' : ', sem áudio'})`);
+    const t0 = performance.now();
+    // Se o sistema nunca responder (seletor travado ou escondido), a pessoa fica sem saber: avisa depois de um tempo.
+    const waitMs = Number((window.RESENHA_CONFIG || {}).pickerWaitMs) || 25000;
+    const hang = setTimeout(() => { shareLog(`sem resposta do sistema há ${Math.round(waitMs / 1000)} s`); toast('O Windows ainda não respondeu à escolha da janela. Se o seletor sumiu ou travou, feche-o e tente de novo escolhendo “Uma janela (sem som)”. Se não adiantar, aperte F5 (ou feche e abra o app): enquanto o pedido ficar pendurado, nenhuma outra tela consegue ser escolhida.', 14000); }, waitMs);
+    S.sharePending = true;
+    try { s = await navigator.mediaDevices.getDisplayMedia(shareOptions(type, q)); } catch (e) { clearTimeout(hang); S.sharePending = false; shareLog(`o sistema respondeu com erro: ${e && e.name}`); return shareFailed(e); }
+    clearTimeout(hang); S.sharePending = false;
+    let pick;
+    try {
+      L.scrV = s.getVideoTracks()[0];
+      { let st = {}; try { st = L.scrV.getSettings(); } catch { /* ok */ } shareLog(`captura recebida em ${Math.round(performance.now() - t0)} ms: ${st.displaySurface || '?'} ${st.width || '?'}×${st.height || '?'}, ${s.getAudioTracks().length ? 'com' : 'sem'} áudio`); }
+      pick = shareAudioPolicy(s, L.scrV);
+      L.scrA = pick.audio;
+      if ('contentHint' in L.scrV) L.scrV.contentHint = q.hint;
+      L.scrV.addEventListener('ended', stopShare);
+      await pushTrack(ROLE_SCR, L.scrV); await pushTrack(ROLE_SCRA, L.scrA);
+      tuneAll(); sendState(); syncTiles(); renderControls();
+      shareLog('transmissão no ar');
+      // A captura pode "dar certo" e nunca entregar quadros (janela protegida, minimizada ou bloqueada): ninguém veria nada.
+      const vt = L.scrV;
+      setTimeout(() => { if (L.scrV === vt && vt.muted) { shareLog('a captura não entregou quadros em 4 s'); toast('A captura começou, mas nenhuma imagem está chegando. Essa janela pode estar protegida, minimizada ou bloqueada pelo Windows: tente outra janela ou a tela inteira.', 12000); } }, 4000);
+    } catch (e) {
+      s.getTracks().forEach((t) => { try { t.stop(); } catch { /* ok */ } });
+      stopShare(); L.scrV = L.scrA = null; renderControls();
+      return shareFailed(e, 'A tela foi capturada, mas não consegui enviá-la');
+    }
     if (pick.why === 'monitor') toast('Você escolheu a tela inteira: o som do computador não é compartilhado. Para compartilhar o som, escolha uma janela.', 8000);
-    else if (!L.scrA && type !== 'monitor') toast(pick.why === 'unknown' ? 'Sua tela está no ar, sem som: não consegui confirmar de onde viria o áudio.' : 'Sua tela está no ar, sem som: este sistema não ofereceu o áudio dessa janela.', 8000);
+    else if (!L.scrA && type !== 'monitor' && type !== 'window-silent') toast(pick.why === 'unknown' ? 'Sua tela está no ar, sem som: não consegui confirmar de onde viria o áudio.' : 'Sua tela está no ar, sem som: este sistema não ofereceu o áudio dessa janela.', 8000);
+  }
+
+  // Passos da transmissão, para o diagnóstico mostrar onde parou quando "nada acontece".
+  const shareSteps = [];
+  function shareLog(msg) { shareSteps.push(`${new Date().toLocaleTimeString()} ${msg}`); while (shareSteps.length > 8) shareSteps.shift(); }
+
+  // Nunca falha em silêncio: quem escolhe a janela e vê "nada acontecer" precisa ler o motivo (e ele vai no diagnóstico).
+  function shareFailed(e, head = 'Não consegui compartilhar a tela') {
+    const name = (e && e.name) || 'Erro', msg = String((e && e.message) || '').slice(0, 120);
+    S.lastError = `${new Date().toLocaleTimeString()} transmitir tela: ${name}${msg ? ` · ${msg}` : ''}`;
+    warn(e);
+    if (name === 'NotAllowedError' && !/system/i.test(msg)) return toast('Compartilhamento cancelado. Se você escolheu uma janela e nada aconteceu, o navegador ou o Windows bloqueou a captura de tela: veja Configurações do Windows > Privacidade > Captura de tela.', 10000);
+    if (name === 'NotAllowedError') return toast('O Windows bloqueou a captura de tela. Libere em Configurações > Privacidade e segurança > Captura de tela (ou “Aplicativos que podem capturar”).', 12000);
+    if (name === 'AbortError' || name === 'NotReadableError') return toast(`${head}: o sistema não conseguiu começar a captura dessa janela (${name}). Tente outra janela, ou a tela inteira, e feche programas que também gravam a tela.`, 12000);
+    toast(`${head} (${name}${msg ? `: ${msg}` : ''}).`, 12000);
   }
 
   /*
@@ -822,6 +877,49 @@
     if (prefs.stats) tiles.forEach((t) => { t.stats.textContent = statText.get(t.key) || ''; });
   }
 
+  /* Gravador: guarda as últimas amostras da tela (a cada 2 s), mesmo com o app escondido atrás de um jogo.
+     O "Copiar diagnóstico" só é tirado depois de voltar para o app, e aí o jogo já saiu da frente: sem o gravador o número não vale. */
+  const hist = [];
+  const HIST_MAX = 90, HIST_MS = 2000;
+  async function recSample() {
+    if (el.room.hidden) return;
+    const watchingPeers = [...S.peers.values()].filter((p) => p.watching && p.state.screen && p.pc && p.pc.connectionState === 'connected');
+    const viewer = L.scrV ? [...S.peers.values()].find((p) => p.wantsScreen && p.pc && p.pc.connectionState === 'connected') : null;
+    if (!viewer && !watchingPeers.length) { last.delete('rec:tx'); return; }
+    const now = performance.now(), hid = document.hidden;
+    try {
+      if (viewer) {
+        const o = await readVideo(viewer.pc, ROLE_SCR, 'tx', 'rec:tx', now);
+        if (o && o.kbps !== undefined) hist.push({ k: 'tx', hid, fps: o.fps, cap: o.cap || 0, kbps: o.kbps, lim: o.limit, w: o.w, h: o.h });
+      }
+      for (const p of watchingPeers) {
+        const o = await readVideo(p.pc, ROLE_SCR, 'rx', `rec:rx:${p.id}`, now);
+        if (o && o.kbps !== undefined) hist.push({ k: 'rx', who: p.name, hid, fps: o.fps, kbps: o.kbps, loss: o.loss || 0, frz: o.freezes || 0, w: o.w, h: o.h });
+      }
+    } catch { /* a ligação estava mudando */ }
+    while (hist.length > HIST_MAX) hist.shift();
+  }
+  setInterval(recSample, HIST_MS);
+
+  function histLines() {
+    const out = [];
+    const avg = (a) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : 0);
+    const groups = new Map();
+    for (const h of hist) { const key = `${h.k}|${h.who || ''}|${h.hid ? 1 : 0}`; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(h); }
+    for (const [key, a] of groups) {
+      if (a.length < 2) continue;
+      const [k, who, hid] = key.split('|');
+      const fps = a.map((h) => h.fps), pct = (f) => Math.round((100 * a.filter(f).length) / a.length);
+      const where = hid === '1' ? 'app escondido (ex.: jogo na frente)' : 'app na frente';
+      const head = `histórico, ${k === 'tx' ? 'enviando a sua tela' : `assistindo ${who}`}, ${where}, ${a.length * HIST_MS / 1000} s`;
+      let body = `quadros por segundo min ${Math.min(...fps)} / média ${avg(fps)} / máx ${Math.max(...fps)} · ${avg(a.map((h) => h.kbps))} kbps em média · ${a[a.length - 1].w}×${a[a.length - 1].h}`;
+      if (k === 'tx') body += ` · a captura entrega em média ${avg(a.map((h) => h.cap))} fps · limite: internet ${pct((h) => h.lim === 'bandwidth')}%, processador ${pct((h) => h.lim === 'cpu')}%`;
+      else body += ` · perda média ${avg(a.map((h) => h.loss))}% · travadas +${Math.max(0, a[a.length - 1].frz - a[0].frz)}`;
+      out.push(`${head}: ${body}`);
+    }
+    return out;
+  }
+
   function setStatsOn(on) {
     prefs.stats = on; savePrefs();
     clearInterval(statsTimer); statsTimer = 0;
@@ -845,6 +943,10 @@
       `câmera: ${cs ? `${cs.width}×${cs.height}, pedido ${cs.frameRate || '?'} fps, qualidade ${prefs.camQ}` : 'desligada'} · tela: ${prefs.scrQ}, ${scrSpec().fps} fps pedidos${L.scrV ? `, captura ${Math.round((L.scrV.getSettings().frameRate || 0))} fps` : ''} · economia: ${prefs.eco ? 'sim' : 'não'}`,
       ...[...S.peers.values()].map((p) => `ligação com ${p.name}: ${p.pc ? `${p.pc.connectionState} (ICE ${p.pc.iceConnectionState})` : 'sem ligação'}`),
       ...[...statText].map(([k, v]) => `${names.get(k) || k}: ${v}`),
+      ...histLines(),
+      `aplicativo: ${('__TAURI_INTERNALS__' in window || '__TAURI__' in window) ? 'instalado (Tauri/WebView2)' : 'navegador'} · captura de tela permitida pela página: ${(() => { try { return document.featurePolicy ? document.featurePolicy.allowsFeature('display-capture') : 'não sei'; } catch { return 'não sei'; } })()}`,
+      ...(shareSteps.length ? [`passos da transmissão: ${shareSteps.join(' → ')}`] : []),
+      ...(S.lastError ? [`último erro: ${S.lastError}`] : []),
     ];
     if (!wasOn) { last.clear(); statText.clear(); }
     return lines.join('\n');
@@ -908,7 +1010,7 @@
     fill(el.selCam, 'videoinput', prefs.cam, 'Padrão do sistema', 'Câmera');
     fill(el.selSpk, 'audiooutput', prefs.spk, 'Padrão do sistema', 'Saída');
     el.spkRow.hidden = !(HTMLMediaElement.prototype.setSinkId);
-    el.selCamQ.value = prefs.camQ; el.selScrQ.value = prefs.scrQ;
+    el.selCamQ.value = prefs.camQ; el.selScrQ.value = prefs.scrQ; el.selScrCodec.value = prefs.scrCodec;
     el.chkAuto.checked = !!prefs.autoWatch; el.chkEco.checked = !!prefs.eco; el.chkPreview.checked = !!prefs.preview; el.chkStats.checked = !!prefs.stats;
   }
 
@@ -1005,6 +1107,7 @@
   });
   el.selCamQ.addEventListener('change', async () => { prefs.camQ = el.selCamQ.value; savePrefs(); if (L.cam) { await setCam(false); await setCam(true); } tuneAll(); });
   el.selScrQ.addEventListener('change', () => { prefs.scrQ = el.selScrQ.value; savePrefs(); tuneAll(); });
+  el.selScrCodec.addEventListener('change', () => { prefs.scrCodec = el.selScrCodec.value; savePrefs(); toast('Vale na próxima vez que você entrar na sala, e só se o seu amigo também escolher a mesma opção.', 7000); });
   el.chkEco.addEventListener('change', () => { prefs.eco = el.chkEco.checked; savePrefs(); if (!prefs.eco) S.peers.forEach((p) => sig(p.id, { ctl: 'rx', on: true })); });
   el.chkPreview.addEventListener('change', () => { prefs.preview = el.chkPreview.checked; savePrefs(); syncTiles(); });
   el.chkStats.addEventListener('change', () => setStatsOn(el.chkStats.checked));
@@ -1031,6 +1134,8 @@
       layout();
     }
   });
+  window.addEventListener('error', (ev) => { S.lastError = `${new Date().toLocaleTimeString()} ${String(ev.message || '').slice(0, 140)}`; });
+  window.addEventListener('unhandledrejection', (ev) => { const r = ev.reason; S.lastError = `${new Date().toLocaleTimeString()} ${String((r && (r.name ? `${r.name}: ${r.message}` : r)) || '').slice(0, 140)}`; });
   window.addEventListener('pagehide', () => { if (!S.leaving) wsSend({ t: 'leave' }); });
 
   /* ----------------------------------------------------------------- início */

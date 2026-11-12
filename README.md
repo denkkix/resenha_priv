@@ -2,11 +2,11 @@
 
 Chamada de vídeo, voz e **tela ao mesmo tempo** com seus amigos, no estilo do Discord, feita para gastar pouca RAM.
 
-- Até **8 pessoas** por sala. Entra quem tiver o código da sala.
+- Até **8 pessoas** por sala por padrão (configurável até 12). Entra quem tiver o código da sala.
 - Câmera, microfone e compartilhamento de tela (com o som **só da janela escolhida**) funcionam juntos.
 - **Transmissão estilo Discord:** ao transmitir você escolhe *janela, aba ou tela inteira* e a qualidade; os amigos veem um bloco **“Fulano está transmitindo a tela · N assistindo”** e só recebem o vídeo e o som quando clicam em **Assistir** (ou se ligarem “assistir automaticamente”). Quem não assiste não gasta internet, nem a cota do relay.
 - Chat de texto na sala.
-- Vídeo e áudio vão **direto entre vocês** (WebRTC, criptografado). O servidor só apresenta um amigo ao outro e leva o chat, por isso é minúsculo.
+- Vídeo e áudio usam **WebRTC criptografado**: vão direto entre vocês quando a rede permite ou passam por um relay TURN quando necessário. O servidor da Resenha faz a sinalização, leva o chat e serve a interface; ele não transporta a mídia.
 - Zero dependências de terceiros no app e no servidor.
 
 > **Quer só seguir o passo a passo?** Abra o **[GUIA.md](GUIA.md)**: servidor em casa com Ubuntu + Tailscale, GitHub e instalador do Windows, explicado sem pular nada.
@@ -14,10 +14,11 @@ Chamada de vídeo, voz e **tela ao mesmo tempo** com seus amigos, no estilo do D
 ## Como funciona
 
 ```
- amigo A  <───── vídeo/voz/tela ─────>  amigo B
+ amigo A  <──── vídeo/voz/tela via WebRTC ────> amigo B
     \                                    /
-     \──── só "apresentações" e chat ───/
-                  servidor (Node)
+     \──── sinalização e chat ─────────/
+              servidor da Resenha
+        (TURN pode retransmitir a mídia)
 ```
 
 - `app/` — o aplicativo (HTML, CSS e JS puro). A mesma pasta serve o navegador e o instalador.
@@ -44,8 +45,11 @@ Opções por variável de ambiente:
 | Variável | Para quê | Padrão |
 |---|---|---|
 | `PORT` | porta | 8787 |
-| `HOST` | `127.0.0.1` aceita só conexões do próprio computador (use atrás de túnel/proxy) | `0.0.0.0` |
-| `MAX_ROOM` | pessoas por sala (máx. 12) | 8 |
+| `HOST` | endereço de escuta; `127.0.0.1` aceita conexões só do próprio computador (útil atrás de túnel/proxy) | `0.0.0.0` |
+| `MAX_ROOM` | pessoas por sala (máximo permitido: 12) | 8 |
+| `MAX_ROOMS` | número máximo de salas simultâneas | 500 |
+| `MAX_CONNS` | número máximo de conexões WebSocket simultâneas | 2000 |
+| `GRACE_MS` | tempo para uma pessoa reconectar sem perder o lugar na sala | 6000 ms |
 | `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN` | **TURN da Cloudflare**: o servidor busca credenciais temporárias e as renova sozinho; o token nunca vai para os clientes | — |
 | `ICE_URL` | outro serviço de TURN (ex.: Metered) que devolva uma lista `iceServers` por GET | — |
 | `MAX_SCREENS` | quantas pessoas podem transmitir a tela ao mesmo tempo (0 = sem limite). **Automático:** 2 quando há Cloudflare/`ICE_URL` (relay com cota); sem limite com coturn próprio ou sem TURN | automático |
@@ -56,7 +60,7 @@ Opções por variável de ambiente:
 
 No serviço do Ubuntu, coloque os segredos em `/etc/resenha.env` (`chmod 600`); o `systemd` lê esse arquivo.
 
-Endereço de saúde: `/health`. Também há um `Dockerfile` (`docker build -t resenha .` e `docker run -p 8787:8787 resenha`).
+O instalador Ubuntu configura `HOST=127.0.0.1`, pois o Tailscale Funnel fica na frente do servidor. Ao executar o Node diretamente ou no Docker, o padrão é `0.0.0.0`. Endereços de saúde e versão: `/health` e `/version.json`. Também há um `Dockerfile` (`docker build -t resenha .` e `docker run -p 8787:8787 resenha`).
 
 ## Instalador (Windows, Mac, Linux)
 
@@ -68,7 +72,7 @@ Instaladores sem assinatura mostram aviso: no Windows, o SmartScreen ("Windows p
 
 ## Atualização do app (sem instalador novo)
 
-O app instalado guarda uma cópia da interface, mas **ao abrir confere o servidor** (`/version.json`) e, se for um servidor da Resenha, passa a mostrar a interface *do servidor* (`app/boot.js`). Atualizar o servidor atualiza todos os apps na próxima abertura; quem está numa chamada recebe um aviso e atualiza depois. Se o servidor não responder, o app segue com a cópia local. A versão é um resumo (hash) dos arquivos de `app/`, calculado ao ligar o servidor; aparece em Ajustes e no diagnóstico.
+O app instalado guarda uma cópia da interface. Quando há um endereço de servidor configurado, **ao abrir confere o servidor** (`/version.json`) e, se for um servidor da Resenha, passa a mostrar a interface *do servidor* (`app/boot.js`). Atualizar o servidor atualiza esses apps na próxima abertura; quem está numa chamada recebe um aviso e atualiza depois. Se o servidor não responder, o app segue com a cópia local. Sem endereço configurado, também usa a cópia local até a pessoa informar um servidor. A versão é um resumo (hash) dos arquivos de `app/`, calculado ao ligar o servidor; aparece em Ajustes e no diagnóstico.
 
 Só é preciso um instalador novo ao mudar `src-tauri/` ou o `app/config.js`. Quem já tem um instalador antigo, anterior a este recurso, precisa trocar uma vez.
 
@@ -82,13 +86,13 @@ Limite: isso atualiza a interface (HTML/CSS/JS) e o servidor, não o programa em
 - Prévia da própria tela vem desligada.
 - **Tela sempre a 60 quadros por segundo.** A qualidade (Ajustes) muda só a resolução e o teto de banda: Leve 720p/2,5 Mbps, Equilibrada 720p/4,5 Mbps, Alta 1080p/8 Mbps (tetos; o WebRTC usa menos se der). 60 fps pedem bem mais banda que 30: com teto baixo o WebRTC corta quadros e resolução. O envio de tela fica limitado a 16 Mbps no total, dividido só entre quem está assistindo.
 - Ao sair da sala, câmera, microfone, ligações e o contexto de áudio são liberados.
-- No servidor, o serviço é limitado a 150 MB e o Node usa bem menos que isso.
+- Na instalação Ubuntu, o serviço `systemd` é limitado a 150 MB (`MemoryMax`); essa restrição não se aplica ao Node executado diretamente nem ao Docker.
 
 Para ver o consumo real no Windows: Gerenciador de Tarefas → aba *Detalhes* → some `resenha.exe` e os `msedgewebview2.exe` dele. Quanto mais gente com câmera ligada na sala, mais memória o motor de vídeo usa para decodificar; isso é inevitável em qualquer app de chamada.
 
 ## O que foi testado e o que não foi
 
-`npm test` roda 194 verificações automáticas (precisa do [Playwright](https://playwright.dev) instalado): servidor (salas, repasse, sala cheia, queda e volta, mensagens inválidas) e **3 navegadores Chromium reais** com câmera e microfone de teste, conferindo voz, câmera, tela com som, chat, modo economia, reconexão e saída. Também testa o TURN contra uma Cloudflare **simulada** (pedido, renovação, queda e recuperação), o painel de estatísticas e o aviso de "sem conexão" numa rede com UDP bloqueado.
+`npm test` roda 228 verificações automáticas na execução completa. Os testes do servidor rodam com Node.js; os testes de interface e WebRTC precisam do [Playwright](https://playwright.dev) instalado e, sem ele, são pulados. Eles usam Chromium com câmera e microfone simulados e conferem voz, câmera, tela com som, chat, modo economia, reconexão e saída. Também testam o TURN contra uma Cloudflare **simulada** (pedido, renovação, queda e recuperação), o painel de estatísticas e o aviso de "sem conexão" numa rede com UDP bloqueado.
 
 Também foi testado o script `deploy/instalar-ubuntu.sh` com um `systemctl` simulado: o serviço roda como usuário sem poderes, não consegue alterar os próprios arquivos e recusa conexões que não venham do próprio computador.
 
@@ -101,6 +105,10 @@ Não foi testado:
 - **O script num Ubuntu com systemd de verdade**, e o **Tailscale Funnel** carregando WebSocket (a documentação do Funnel não cita WebSocket; o passo 1.3 do guia testa isso).
 - **O seletor real de tela** do sistema: nos testes ele foi simulado. O caminho depois dele (enviar vídeo e som aos amigos) foi testado.
 - **Seletor de janelas com miniaturas dentro do app (como o do Discord): não existe.** A janela “Transmitir a tela” do app escolhe o *tipo* (janela, aba, tela inteira) e a qualidade e repassa isso ao navegador como dica; quem mostra a lista de janelas é o seletor do próprio sistema/WebView2. Um seletor próprio exigiria código nativo (Rust/Windows) que não dá para compilar nem testar aqui.
+- **Diagnóstico com histórico:** enquanto alguém transmite ou assiste, o app grava a cada 2 s (até 3 min) fps, banda, captura, limite, perda e travadas, mesmo com o app escondido atrás de um jogo, e o “Copiar diagnóstico” traz o resumo separado em “app na frente” e “app escondido”. Sem isso o diagnóstico só media depois de voltar ao app, quando o jogo já saiu da frente.
+- **Transmissão sem resposta:** se o seletor do sistema não responde em 25 s, ou a captura começa mas não entrega quadros em 4 s, o app avisa. O diagnóstico traz `passos da transmissão` (onde parou) e `aplicativo: instalado ou navegador`.
+- **Falhas ao transmitir nunca ficam em silêncio:** se o sistema recusar a captura (`AbortError`, “Permission denied by system” etc.), o app mostra o motivo e o diagnóstico traz a linha `último erro:`.
+- **Codificador H.264 (Ajustes, experimental):** pede ao Windows para codificar a tela na placa de vídeo, aliviando o processador (útil em jogos). Só vale se os dois lados escolherem; se só um escolher, a ligação segue em VP8. A negociação foi testada, mas o uso real da placa de vídeo no Windows não: o painel de estatísticas mostra “codificador H264 / … (hardware)” quando funcionar.
 - O botão **Assistir**, o contador e a economia de banda foram testados com 3 navegadores reais; o ganho de banda no mundo real (e na cota da Cloudflare) não foi medido.
 - **Mac e Linux dentro do Tauri**: o motor web desses sistemas pode não permitir compartilhar a tela. No Windows (WebView2, mesma base do Edge) o esperado é funcionar. Se faltar em outro sistema, use a Resenha pelo navegador.
 

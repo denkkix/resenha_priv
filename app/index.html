@@ -127,6 +127,13 @@
 
     <p class="hint" id="scrHint">A tela sai sempre a 60 quadros por segundo; a qualidade muda só a resolução.</p>
 
+    <label for="selScrCodec">Codificador da tela <small>(experimental)</small></label>
+    <select id="selScrCodec" aria-describedby="codecHint">
+      <option value="auto">Automático (padrão)</option>
+      <option value="h264">Placa de vídeo (H.264)</option>
+    </select>
+    <p class="hint" id="codecHint">Se a transmissão cair para 30 fps durante jogos, teste esta opção: tira trabalho do processador. Os dois lados precisam escolher o mesmo e reentrar na sala.</p>
+
     <label class="check"><input type="checkbox" id="chkAuto"> Assistir as transmissões automaticamente <small>Por padrão a tela de um amigo só chega quando você clica em “Assistir”, o que economiza internet.</small></label>
     <label class="check"><input type="checkbox" id="chkEco"> Economizar quando a janela estiver minimizada <small>Pede aos amigos para pararem de mandar vídeo enquanto você não está olhando.</small></label>
     <label class="check"><input type="checkbox" id="chkPreview"> Mostrar prévia da minha tela <small>Usa mais memória. Desligado por padrão.</small></label>
@@ -148,6 +155,7 @@
     <label for="selShareType">O que transmitir</label>
     <select id="selShareType" aria-describedby="shareHint">
       <option value="window">Uma janela (com o som dela)</option>
+      <option value="window-silent">Uma janela (sem som)</option>
       <option value="browser">Uma aba do navegador (com o som dela)</option>
       <option value="monitor">A tela inteira (sem som)</option>
     </select>

@@ -5,3 +5,4 @@ src-tauri/gen/
 .agents/
 .vscode/
 skills-lock.json
+GUIA.md

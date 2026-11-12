@@ -197,6 +197,9 @@ Em **Ajustes** aparece "Versão da interface: xxxxxxxx" (o mesmo código sai no 
 | Servidor reiniciou e nada funciona | Espere 1 minuto; senão `sudo systemctl restart resenha`. |
 | Dois amigos entram mas **não se veem nem se escutam** ("conectando…" e depois "sem conexão") | Rede bloqueando a ligação direta: faça a **Parte 2**. Confirme em **Ajustes → Copiar diagnóstico**: `servidor TURN: NÃO` + ligação não `connected`. |
 | Fiz o TURN e não liga | `sudo journalctl -u resenha -n 20 --no-pager`: "respondeu 401/403" = token ou ID errado; "404" = ID errado; sem linha de TURN = falta o `/etc/resenha.env` ou reiniciar o serviço. |
+| Depois de travar, nenhuma outra tela dá certo | O Windows deixou um pedido de captura pendurado e o navegador só aceita um por vez. Aperte **F5** (ou feche e abra o app) e entre na sala de novo. |
+| Janela do Chrome/Edge trava ao transmitir | Na janela “Transmitir a tela”, escolha **Uma janela (sem som)**. Para ter o som, use a aba (no navegador) ou a tela inteira. |
+| Escolho a janela e a transmissão não começa | Agora o app mostra o motivo. Se for bloqueio do Windows: Configurações > Privacidade e segurança > Captura de tela. Tente outra janela ou a tela inteira, e feche programas que gravam a tela. |
 | Tela do amigo não aparece, só um bloco “está transmitindo a tela” | É o normal: clique em **Assistir**. |
 | "Já há 2 pessoas transmitindo a tela" | É o limite de gastos. Espere uma parar, ou ajuste `MAX_SCREENS` (ver 2.1). |
 | Câmera travando | **Ajustes → Mostrar estatísticas**: "webcam entrega 15 fps" = pouca luz; `limite: internet` ou `perda` alta = rede (cabo, ou **Qualidade da câmera → Leve**); `limite: processador` = PC sobrecarregado. Use **Copiar diagnóstico** e me mande. |

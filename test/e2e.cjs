@@ -260,6 +260,7 @@ function stubScreen() {
   // Simula o seletor de tela (que não existe sem interface): canvas animado + tom de áudio.
   navigator.mediaDevices.getDisplayMedia = async (opts) => {
     window.__asked = JSON.stringify(opts);
+    if (window.__reject) { const [n, m] = window.__reject; throw new DOMException(m, n); } // simula falhas do sistema
     const cv = document.createElement('canvas'); cv.width = 1280; cv.height = 720;
     const g = cv.getContext('2d'); let x = 0;
     setInterval(() => { g.fillStyle = '#123'; g.fillRect(0, 0, 1280, 720); g.fillStyle = '#fc4'; g.fillRect((x += 12) % 1200, 300, 80, 80); g.fillStyle = '#fff'; g.font = '48px sans-serif'; g.fillText('TELA COMPARTILHADA', 60, 120); }, 40);
@@ -267,9 +268,10 @@ function stubScreen() {
     const ctx = new AudioContext(); const osc = ctx.createOscillator(); osc.frequency.value = 440;
     const dst = ctx.createMediaStreamDestination(); osc.connect(dst); osc.start();
     const vt = vs.getVideoTracks()[0];
+    if (window.__muted) Object.defineProperty(vt, 'muted', { get: () => true });
     // Mesmo que o navegador mostrasse a tela inteira, janela ou aba: window.__surface escolhe (padrão: janela)
     if (window.__surface !== null) { const surf = window.__surface === undefined ? 'window' : window.__surface; const gs = vt.getSettings.bind(vt); vt.getSettings = () => ({ ...gs(), displaySurface: surf }); }
-    return new MediaStream([vt, dst.stream.getAudioTracks()[0]]);
+    return new MediaStream(opts && opts.audio === false ? [vt] : [vt, dst.stream.getAudioTracks()[0]]); // sem áudio pedido, o navegador não entrega
   };
 }
 
@@ -281,10 +283,11 @@ async function toggleShare(p) {
 // Sem 'manual', o amigo assiste sozinho (preferência "assistir automaticamente"); com 'manual', só ao clicar em "Assistir".
 const seedAuto = () => () => { try { const k = 'resenha.prefs'; const v = JSON.parse(localStorage.getItem(k) || '{}'); if (v.autoWatch === undefined) { v.autoWatch = true; localStorage.setItem(k, JSON.stringify(v)); } } catch { /* ok */ } };
 
-async function openPeer(browser, name, code, manual = false) {
+async function openPeer(browser, name, code, manual = false, extra = null) {
   const ctx = await browser.newContext({ permissions: ['camera', 'microphone', 'clipboard-read', 'clipboard-write'], viewport: { width: 1100, height: 700 } });
   await ctx.addInitScript(stubScreen);
   if (!manual) await ctx.addInitScript(seedAuto());
+  if (extra) await ctx.addInitScript((e) => { try { const k = 'resenha.prefs'; const v = JSON.parse(localStorage.getItem(k) || '{}'); localStorage.setItem(k, JSON.stringify({ ...v, ...e })); } catch { /* ok */ } }, extra);
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -733,11 +736,37 @@ async function watchTests() {
     // janela de escolha: abre, tem as 3 opções, cancelar não transmite
     await A.page.click('#bScr');
     check(await dlg(A.page), 'ao clicar em compartilhar, abre a janela de escolha em vez de já capturar');
-    check(await A.page.evaluate(() => [...document.getElementById('selShareType').options].map((o) => o.value).join()) === 'window,browser,monitor', 'a janela oferece: janela, aba e tela inteira');
+    check(await A.page.evaluate(() => [...document.getElementById('selShareType').options].map((o) => o.value).join()) === 'window,window-silent,browser,monitor', 'a janela oferece: janela, janela sem som, aba e tela inteira');
     check(await A.page.evaluate(() => document.getElementById('shareHint').textContent.length > 10), 'a janela explica como fica o som da opção escolhida');
     await shot(A.page, '7b-janela-transmitir');
     await A.page.click('#btnShareCancel');
     check(!(await dlg(A.page)) && await A.page.evaluate(() => !window.__resenha.L.scrV), 'cancelar não começa a transmitir');
+
+    // falhas do seletor nunca ficam em silêncio
+    for (const [n, m, re] of [['AbortError', 'Could not start video source', /não conseguiu começar a captura.*AbortError/], ['NotAllowedError', 'Permission denied by system', /Windows bloqueou a captura/], ['NotAllowedError', 'Permission denied', /Compartilhamento cancelado/], ['TypeError', 'algo estranho', /TypeError: algo estranho/]]) {
+      await A.page.evaluate((r) => { window.__reject = r; document.getElementById('toast').hidden = true; }, [n, m]);
+      await toggleShare(A.page);
+      check(await until(A.page, (src) => { const t = document.getElementById('toast'); return !t.hidden && new RegExp(src).test(t.textContent); }, re.source, 3000), `falha ${n} (“${m}”) mostra um aviso claro`, await A.page.evaluate(() => document.getElementById('toast').textContent));
+      check(await A.page.evaluate(() => !window.__resenha.L.scrV), `falha ${n}: não fica "transmitindo" sem transmitir`);
+    }
+    // seletor que nunca responde: avisa; captura sem quadros: avisa
+    await A.page.evaluate(() => { window.RESENHA_CONFIG.pickerWaitMs = 1200; window.__reject = null; const orig = navigator.mediaDevices.getDisplayMedia; window.__orig = orig; navigator.mediaDevices.getDisplayMedia = () => new Promise(() => {}); document.getElementById('toast').hidden = true; });
+    await A.page.click('#bScr'); await A.page.click('#btnShareGo');
+    check(await until(A.page, () => /ainda não respondeu/.test(document.getElementById('toast').textContent) && !document.getElementById('toast').hidden, null, 4000), 'seletor que nunca responde: o app avisa');
+    // com o pedido pendurado, nova tentativa não abre outro pedido: explica o que fazer
+    await A.page.evaluate(() => { document.getElementById('toast').hidden = true; });
+    await A.page.click('#bScr');
+    check(await until(A.page, () => /Ainda há um pedido de captura em andamento/.test(document.getElementById('toast').textContent) && !document.getElementById('toast').hidden, null, 3000), 'pedido pendurado: nova tentativa explica o que fazer (F5)');
+    check(await A.page.evaluate(() => !document.getElementById('shareDlg').open), 'pedido pendurado: não abre outra janela de escolha');
+    await A.page.evaluate(() => { window.__resenha.S.sharePending = false; });
+    await A.page.evaluate(() => { navigator.mediaDevices.getDisplayMedia = window.__orig; window.__muted = true; document.getElementById('toast').hidden = true; });
+    await toggleShare(A.page);
+    check(await until(A.page, () => /nenhuma imagem está chegando/.test(document.getElementById('toast').textContent) && !document.getElementById('toast').hidden, null, 8000), 'captura que não entrega quadros: o app avisa');
+    check(await A.page.evaluate(async () => /passos da transmissão: .*captura recebida em \d+ ms: window.*transmissão no ar.*não entregou quadros/.test(await window.__resenha.buildDiag())), 'o diagnóstico mostra os passos da transmissão');
+    check(await A.page.evaluate(async () => /aplicativo: navegador · captura de tela permitida/.test(await window.__resenha.buildDiag())), 'o diagnóstico diz se é o app instalado ou o navegador');
+    await A.page.evaluate(() => { window.__muted = false; }); await toggleShare(A.page); await sleep(300);
+    check(await A.page.evaluate(async () => /último erro: .*TypeError · algo estranho/.test(await window.__resenha.buildDiag())), 'o último erro de transmissão vai no diagnóstico');
+    await A.page.evaluate(() => { window.__reject = null; });
 
     // tela inteira: sem pedir som, e o app lembra a escolha
     await A.page.click('#bScr'); await A.page.selectOption('#selShareType', 'monitor'); await A.page.selectOption('#selShareQ', 'alta'); await A.page.click('#btnShareGo');
@@ -746,6 +775,14 @@ async function watchTests() {
     check(o.audio === false && o.video.displaySurface === 'monitor' && o.video.frameRate.max === 60, 'tela inteira: não pede som e pede 60 fps', JSON.stringify(o));
     check(await A.page.evaluate(() => window.__resenha.prefs.scrQ === 'alta' && window.__resenha.prefs.shareType === 'monitor'), 'o app lembra o tipo e a qualidade escolhidos');
     check(await A.page.evaluate(() => !document.getElementById('toast') || document.getElementById('toast').hidden || !/sem som/.test(document.getElementById('toast').textContent)), 'tela inteira escolhida de propósito: sem aviso de erro');
+    await toggleShare(A.page); await sleep(300);
+
+    // janela sem som: não pede áudio algum (evita a trava de áudio em janelas de navegador)
+    await A.page.click('#bScr'); await A.page.selectOption('#selShareType', 'window-silent'); await A.page.click('#btnShareGo');
+    check(await until(A.page, () => !!window.__resenha.L.scrV, null, 5000), 'janela sem som: transmissão começa');
+    o = await asked();
+    check(o.audio === false && o.windowAudio === undefined && o.video.displaySurface === 'window' && o.monitorTypeSurfaces === 'exclude', 'janela sem som: pede janela e nenhum áudio', JSON.stringify(o));
+    check(await A.page.evaluate(() => !window.__resenha.L.scrA), 'janela sem som: nenhum áudio é enviado');
     await toggleShare(A.page); await sleep(300);
 
     // aba: não oferece a própria aba e mantém o som; janela: exclui telas inteiras
@@ -781,6 +818,12 @@ async function watchTests() {
     check(await B.page.evaluate((id) => { const t = window.__resenha.tiles.get(id + ':s'); return getComputedStyle(t.cta).display === 'none' && getComputedStyle(t.leave).display !== 'none'; }, A.id), 'assistindo: some o botão Assistir e aparece “Sair da transmissão”');
 
     check(await A.page.evaluate(() => [...window.__resenha.S.peers.values()].every((p) => p.pc.getTransceivers()[2].sender.getParameters().encodings[0].maxBitrate === 4500000)), 'com 2 assistindo em Equilibrada, cada um tem teto de 4,5 Mbps (e 60 fps)');
+    check(await until(A.page, async () => /histórico, enviando a sua tela, app na frente, \d+ s: quadros por segundo min \d+ \/ média \d+ \/ máx \d+.*captura entrega em média \d+ fps.*limite: internet \d+%/.test(await window.__resenha.buildDiag()), null, 20000), 'o diagnóstico de quem transmite traz o histórico (fps mín/média/máx, captura, limite)');
+    check(await until(B.page, async () => /histórico, assistindo Ana, app na frente, \d+ s: quadros por segundo min .*perda média \d+%.*travadas \+\d+/.test(await window.__resenha.buildDiag()), null, 20000), 'o diagnóstico de quem assiste traz o histórico (fps, perda, travadas)');
+    // simula o jogo na frente (app escondido): as amostras continuam sendo gravadas, separadas das de "app na frente"
+    await A.page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); });
+    check(await until(A.page, async () => /histórico, enviando a sua tela, app escondido \(ex\.: jogo na frente\), \d+ s:/.test((await window.__resenha.buildDiag())), null, 20000), 'com o app escondido o gravador continua medindo e separa essas amostras');
+    await A.page.evaluate(() => { delete document.hidden; });
     // Bruno sai
     await B.page.click('.tile.screen .leave-stream');
     check(await until(A.page, () => /1 pessoa assistindo/.test(document.getElementById('live').textContent), null, 5000), 'Bruno saiu: volta a 1 pessoa assistindo');
@@ -809,6 +852,31 @@ async function watchTests() {
 
     for (const p of [A, B, C]) check(p.errors.length === 0, `${p.name}: sem erros no console`, p.errors.join(' | '));
     await shot(B.page, '7-assistir');
+  } finally { await browser.close(); }
+}
+
+
+/* ------------------------------------------------ codificador H.264 (experimental) */
+async function codecTests() {
+  console.log('\n== Codificador da tela (H.264 opcional) ==');
+  let chromium;
+  try { ({ chromium } = require('playwright')); } catch { console.log('  playwright não encontrado; pulando'); return; }
+  const browser = await chromium.launch({ args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--disable-features=WebRtcHideLocalIpsWithMdns'] });
+  try {
+    for (const [label, pa, pb, want] of [['os dois escolhem H.264', 'h264', 'h264', 'H264'], ['só um escolhe H.264', 'h264', 'auto', null], ['padrão (nenhum escolhe)', 'auto', 'auto', 'VP8']]) {
+      const code = 'cod-' + Math.floor(Math.random() * 90000);
+      const A = await openPeer(browser, 'Ana', code, false, { scrCodec: pa });
+      const B = await openPeer(browser, 'Bruno', code, false, { scrCodec: pb });
+      for (const p of [A, B]) await p.page.waitForFunction(() => window.__resenha.S.peers.size === 1, null, { timeout: 15000 });
+      await toggleShare(A.page);
+      check(await until(B.page, (id) => window.__resenha.tiles.get(id + ':s') && window.__resenha.tiles.get(id + ':s').video.videoWidth > 0, A.id, 10000), `${label}: a tela chega ao amigo`);
+      check((await growing(B.page, A.id, 2, 1500)).ok, `${label}: o vídeo da tela está fluindo`);
+      const diag = await A.page.evaluate(async () => (await window.__resenha.buildDiag()).split('\n').filter((l) => /sua tela/.test(l)).join(' '));
+      if (want) check(new RegExp(`codificador ${want}`).test(diag), `${label}: a tela usa ${want}`, diag);
+      else check(/codificador (VP8|H264)/.test(diag), `${label}: ligação funciona com codec ${(diag.match(/codificador (\w+)/) || [])[1]}`, diag);
+      check(A.errors.length === 0 && B.errors.length === 0, `${label}: sem erros no console`, [...A.errors, ...B.errors].join(' | '));
+      await A.page.context().close(); await B.page.context().close();
+    }
   } finally { await browser.close(); }
 }
 
@@ -846,6 +914,7 @@ async function blockedTests() {
     if (!only || only === 'browser') await browserTests();
     if (!only || only === 'blocked') await blockedTests();
     if (!only || only === 'watch') await watchTests();
+    if (!only || only === 'codec') await codecTests();
     if (!only || only === 'update') await updateTests();
     if (!only || only === 'limit') { await limitServerTests(); await limitBrowserTests(); }
   } catch (e) {
